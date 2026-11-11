@@ -1,18 +1,37 @@
 package dev.basehunt.bhclient.commands;
 
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import dev.basehunt.bhclient.core.AutomationEvent;
+import dev.basehunt.bhclient.core.AutomationManager;
+import dev.basehunt.bhclient.gui.BaseHuntingScreen;
 import dev.basehunt.bhclient.modules.BaseHunter;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
+import dev.basehunt.bhclient.modules.ChestSorter;
+import dev.basehunt.bhclient.modules.EnderChestManager;
+import dev.basehunt.bhclient.modules.InventoryManager;
+import dev.basehunt.bhclient.modules.MendingManager;
 import dev.basehunt.bhclient.modules.NewChunks;
 import dev.basehunt.bhclient.modules.PlayerLogger;
-import dev.basehunt.bhclient.modules.StashFinder;
+import dev.basehunt.bhclient.modules.RestockManager;
+import dev.basehunt.bhclient.modules.ShulkerManager;
+import dev.basehunt.bhclient.modules.StorageMonitor;
+import dev.basehunt.bhclient.modules.StorageNetwork;
+import dev.basehunt.bhclient.modules.SurvivalManager;
 import dev.basehunt.bhclient.modules.WebhookNotifier;
+import dev.basehunt.bhclient.systems.ContainerInteractionManager;
+import dev.basehunt.bhclient.systems.DatabaseIO;
+import dev.basehunt.bhclient.systems.EnderChestStore;
+import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.PlayerTracker;
 import dev.basehunt.bhclient.systems.StashManager;
+import dev.basehunt.bhclient.systems.StorageRegistry;
+import dev.basehunt.bhclient.systems.WorkflowManager;
 import dev.basehunt.bhclient.utils.BaritoneHelper;
 import dev.basehunt.bhclient.utils.ElytraManager;
 import dev.basehunt.bhclient.utils.ServerUtils;
 import meteordevelopment.meteorclient.commands.Command;
+import meteordevelopment.meteorclient.gui.GuiThemes;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import net.minecraft.command.CommandSource;
 import net.minecraft.util.math.BlockPos;
@@ -22,6 +41,9 @@ import static com.mojang.brigadier.arguments.IntegerArgumentType.integer;
 
 /**
  * Single entry point for everything the addon can do from chat, so no module has to be opened by hand.
+ *
+ * <p>Commands are grouped by area (explore, stash, player, elytra, route, database) and every group has a
+ * status subcommand, so the client can always be inspected without guessing argument shapes.
  */
 public class BaseHuntCommand extends Command {
     public BaseHuntCommand() {
@@ -40,56 +62,24 @@ public class BaseHuntCommand extends Command {
             return SINGLE_SUCCESS;
         }));
 
-        builder.then(literal("fly")
-            .then(argument("x", integer())
-                .then(argument("z", integer())
-                    .executes(context -> {
-                        flyTo(getInteger(context, "x"), getInteger(context, "z"));
-                        return SINGLE_SUCCESS;
-                    })
-                )
-            )
-        );
+        builder.then(literal("gui").executes(context -> {
+            BaseHuntingScreen.open(GuiThemes.get());
+            return SINGLE_SUCCESS;
+        }));
 
-        builder.then(literal("v2")
-            .executes(context -> {
-                v2Status();
-                return SINGLE_SUCCESS;
-            })
-            .then(literal("start").executes(context -> {
-                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
-                if (hunter == null) {
-                    error("Base Hunter V2 is unavailable.");
-                    return SINGLE_SUCCESS;
-                }
+        builder.then(literal("events").executes(context -> {
+            recentEvents();
+            return SINGLE_SUCCESS;
+        }));
 
-                if (!hunter.isActive()) hunter.enable();
-                hunter.start();
-                return SINGLE_SUCCESS;
-            }))
-            .then(literal("stop").executes(context -> {
-                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
-                if (hunter != null) hunter.stop();
-                return SINGLE_SUCCESS;
-            }))
-            .then(literal("refresh").executes(context -> {
-                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
-                if (hunter != null) hunter.refreshTargets();
-                return SINGLE_SUCCESS;
-            }))
-            .then(literal("elytra").executes(context -> {
-                info("Elytra: %s", ElytraManager.status());
-
-                if (!ElytraManager.hasElytraEquipped() && ElytraManager.equipBest()) {
-                    info("Equipped a spare elytra.");
-                }
-
-                return SINGLE_SUCCESS;
-            }))
-        );
+        builder.then(literal("start").executes(context -> startV2("adaptive")));
 
         builder.then(literal("stop").executes(context -> {
             BaseHunter hunter = Modules.get().get(BaseHunter.class);
+            BaseHunterV2 v2 = Modules.get().get(BaseHunterV2.class);
+
+            if (v2 != null && v2.isStarted()) v2.stop();
+
             if (hunter != null && hunter.isActive()) {
                 hunter.disable();
                 info("Base Hunter stopped.");
@@ -101,6 +91,585 @@ public class BaseHuntCommand extends Command {
             return SINGLE_SUCCESS;
         }));
 
+        builder.then(literal("pause").executes(context -> {
+            BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+            if (hunter != null && hunter.isStarted()) hunter.pause();
+            else info("Nothing is flying.");
+            return SINGLE_SUCCESS;
+        }));
+
+        builder.then(literal("resume").executes(context -> {
+            BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+            if (hunter != null && hunter.isStarted()) hunter.resume();
+            else info("Nothing to resume.");
+            return SINGLE_SUCCESS;
+        }));
+
+        buildExplore(builder);
+        buildV2(builder);
+        buildFly(builder);
+        buildStash(builder);
+        buildPlayer(builder);
+        buildElytra(builder);
+        buildEchest(builder);
+        buildInventory(builder);
+        buildStorage(builder);
+        buildShulker(builder);
+        buildWorkflow(builder);
+        buildRoute(builder);
+        buildDatabase(builder);
+        buildWebhook(builder);
+    }
+
+    // Groups
+
+    private void buildExplore(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("explore")
+            .executes(context -> {
+                exploreStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                exploreStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("grid").executes(context -> startV2("grid")))
+            .then(literal("spiral").executes(context -> startV2("spiral")))
+            .then(literal("adaptive").executes(context -> startV2("adaptive")))
+            .then(literal("heading")
+                .then(argument("degrees", integer(0, 360)).executes(context -> {
+                    startV2("heading");
+                    BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                    if (hunter != null) {
+                        hunter.setHeadingDegrees(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "degrees"));
+                    }
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("custom").executes(context -> {
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                if (hunter == null) {
+                    error("Base Hunter V2 is unavailable.");
+                    return SINGLE_SUCCESS;
+                }
+                ExplorationStore store = ExplorationStore.get();
+                if (store == null || store.customWaypoints().isEmpty()) {
+                    error("No route waypoints. Add some with /bh route add first.");
+                    return SINGLE_SUCCESS;
+                }
+                if (!hunter.isActive()) hunter.enable();
+                hunter.setExploreMode(BaseHunterV2.ExploreMode.Custom);
+                hunter.start();
+                info("Exploring the custom route (%d waypoints).", store.customWaypoints().size());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("reset").executes(context -> {
+                ExplorationStore store = ExplorationStore.get();
+                if (store != null) store.clearExplored();
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                if (hunter != null) hunter.resetPattern();
+                info("Exploration history cleared.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildV2(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("v2")
+            .executes(context -> {
+                v2Status();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("start").executes(context -> startV2("adaptive")))
+            .then(literal("stop").executes(context -> {
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                if (hunter != null) hunter.stop();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("pause").executes(context -> {
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                if (hunter != null && hunter.isStarted()) hunter.pause();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("resume").executes(context -> {
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                if (hunter != null && hunter.isStarted()) hunter.resume();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("refresh").executes(context -> {
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                if (hunter != null) hunter.refreshTargets();
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildFly(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("fly")
+            .then(argument("x", integer())
+                .then(argument("z", integer())
+                    .executes(context -> {
+                        flyTo(getInteger(context, "x"), getInteger(context, "z"));
+                        return SINGLE_SUCCESS;
+                    })
+                )
+            )
+        );
+    }
+
+    private void buildStash(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("stash")
+            .executes(context -> {
+                stashList();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("list").executes(context -> {
+                stashList();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("nearby").executes(context -> {
+                stashNearby();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("search")
+                .then(argument("query", StringArgumentType.greedyString())
+                    .executes(context -> {
+                        stashSearch(StringArgumentType.getString(context, "query"));
+                        return SINGLE_SUCCESS;
+                    })
+                )
+            )
+            .then(literal("export").executes(context -> {
+                if (DatabaseIO.exportToFile()) info("Exported to %s.", DatabaseIO.exportFile().getName());
+                else error("Export failed.");
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("clear").executes(context -> {
+                StashManager manager = StashManager.get();
+                if (manager != null) {
+                    int removed = manager.removeWhere(stash -> stash.server.equals(ServerUtils.serverAddress()));
+                    info("Removed %d stash record(s).", removed);
+                }
+                return SINGLE_SUCCESS;
+            }))
+        );
+
+        // Kept as an alias so the older spelling still works.
+        builder.then(literal("stashes").executes(context -> {
+            stashList();
+            return SINGLE_SUCCESS;
+        }));
+    }
+
+    private void buildPlayer(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("player")
+            .executes(context -> {
+                playerList();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("list").executes(context -> {
+                playerList();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("search")
+                .then(argument("query", StringArgumentType.greedyString())
+                    .executes(context -> {
+                        playerSearch(StringArgumentType.getString(context, "query"));
+                        return SINGLE_SUCCESS;
+                    })
+                )
+            )
+            .then(literal("history")
+                .then(argument("query", StringArgumentType.greedyString())
+                    .executes(context -> {
+                        playerHistory(StringArgumentType.getString(context, "query"));
+                        return SINGLE_SUCCESS;
+                    })
+                )
+            )
+            .then(literal("expire")
+                .then(argument("hours", integer(1))
+                    .executes(context -> {
+                        PlayerTracker tracker = PlayerTracker.get();
+                        if (tracker != null) {
+                            int removed = tracker.expireOlderThan(getInteger(context, "hours"));
+                            info("Removed %d player record(s).", removed);
+                        }
+                        return SINGLE_SUCCESS;
+                    })
+                )
+            )
+            .then(literal("clear").executes(context -> {
+                PlayerTracker tracker = PlayerTracker.get();
+                if (tracker != null) info("Removed %d player records.", tracker.clearCurrentServer());
+                PlayerLogger logger = Modules.get().get(PlayerLogger.class);
+                if (logger != null) logger.clearSpots();
+                return SINGLE_SUCCESS;
+            }))
+        );
+
+        builder.then(literal("players").executes(context -> {
+            playerList();
+            return SINGLE_SUCCESS;
+        }));
+    }
+
+    private void buildElytra(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("elytra")
+            .executes(context -> {
+                elytraStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                elytraStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("replace").executes(context -> {
+                if (ElytraManager.equipBest()) info("Equipped a fresh elytra: %s", ElytraManager.status());
+                else error("No usable spare elytra found.");
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("repair")
+                .then(literal("status").executes(context -> {
+                    MendingManager mending = Modules.get().get(MendingManager.class);
+                    if (mending == null) {
+                        error("Mending manager is unavailable.");
+                        return SINGLE_SUCCESS;
+                    }
+                    info("Mending: %s", mending.statusLine());
+                    return SINGLE_SUCCESS;
+                }))
+            )
+        );
+    }
+
+    private void buildEchest(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("echest")
+            .executes(context -> {
+                echestStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                echestStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("open").executes(context -> {
+                EnderChestManager manager = Modules.get().get(EnderChestManager.class);
+                if (manager == null || !manager.isActive()) {
+                    error("Enable the ender-chest-manager module first.");
+                    return SINGLE_SUCCESS;
+                }
+
+                if (manager.openLookingAt()) info("Opening the ender chest you are looking at.");
+                else error("Could not open: %s.", manager.lastFailure());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("organise").executes(context -> {
+                EnderChestManager manager = Modules.get().get(EnderChestManager.class);
+                if (manager == null || !manager.isActive()) {
+                    error("Enable the ender-chest-manager module first.");
+                    return SINGLE_SUCCESS;
+                }
+
+                if (!manager.organise()) error("Could not organise: %s.", manager.lastFailure());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("goto").executes(context -> {
+                EnderChestManager manager = Modules.get().get(EnderChestManager.class);
+                if (manager == null || !manager.isActive()) {
+                    error("Enable the ender-chest-manager module first.");
+                    return SINGLE_SUCCESS;
+                }
+
+                String failure = manager.navigateToNearest();
+                if (failure != null) error("Could not navigate: %s.", failure);
+                else info("Heading to the nearest recorded ender chest.");
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                EnderChestStore store = EnderChestStore.get();
+                if (store == null) {
+                    error("Ender chest store is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+
+                var chests = store.forCurrentServer();
+                if (chests.isEmpty()) {
+                    info("No ender chests recorded for this server.");
+                    return SINGLE_SUCCESS;
+                }
+
+                info("Ender chests on %s:", ServerUtils.serverAddress());
+                for (EnderChestStore.Chest chest : chests) {
+                    info("  %s (%s) opened %d time(s)", chest.pos.toShortString(), chest.dimension, chest.timesOpened);
+                }
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildInventory(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("inventory")
+            .executes(context -> {
+                inventoryStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                inventoryStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("organise").executes(context -> {
+                EnderChestManager manager = Modules.get().get(EnderChestManager.class);
+                if (manager != null && manager.organise()) info("Organising the open ender chest.");
+                else error("No ender chest is open, or the manager is disabled.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildStorage(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("storage")
+            .executes(context -> {
+                storageStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                storageStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                storageList();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("register").executes(context -> {
+                StorageNetwork network = Modules.get().get(StorageNetwork.class);
+                if (network == null) {
+                    error("The storage network module is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", network.registerLooking());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("goto")
+                .then(argument("id", integer(1)).executes(context -> {
+                    StorageNetwork network = Modules.get().get(StorageNetwork.class);
+                    if (network == null) {
+                        error("The storage network module is not loaded.");
+                        return SINGLE_SUCCESS;
+                    }
+                    info("%s", network.gotoContainer(getInteger(context, "id")));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("sort").executes(context -> {
+                InventoryManager inventory = Modules.get().get(InventoryManager.class);
+                if (inventory == null) {
+                    error("The inventory manager module is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", inventory.sortNow("command"));
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("deposit").executes(context -> {
+                ChestSorter chest = Modules.get().get(ChestSorter.class);
+                if (chest == null || !(mc.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> screen)) {
+                    error("Open a container first.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", chest.deposit(screen.getScreenHandler()));
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("withdraw").executes(context -> {
+                ChestSorter chest = Modules.get().get(ChestSorter.class);
+                if (chest == null || !(mc.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> screen)) {
+                    error("Open a container first.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", chest.withdraw(screen.getScreenHandler()));
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("clear").executes(context -> {
+                StorageRegistry registry = StorageRegistry.get();
+                if (registry == null) {
+                    error("The storage registry is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                int removed = registry.removeWhere(container ->
+                    container.server.equals(ServerUtils.serverAddress()));
+                info("Removed %d container(s) on this server.", removed);
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildShulker(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("shulker")
+            .executes(context -> {
+                shulkerStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                shulkerStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("search")
+                .then(argument("item", StringArgumentType.word()).executes(context -> {
+                    ShulkerManager shulker = Modules.get().get(ShulkerManager.class);
+                    if (shulker == null) {
+                        error("The shulker manager module is not loaded.");
+                        return SINGLE_SUCCESS;
+                    }
+                    info("%s", shulker.search(StringArgumentType.getString(context, "item")));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("fill").executes(context -> {
+                ShulkerManager shulker = Modules.get().get(ShulkerManager.class);
+                if (shulker == null || !(mc.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> screen)
+                    || !(screen.getScreenHandler() instanceof net.minecraft.screen.ShulkerBoxScreenHandler handler)) {
+                    error("Open a shulker box first.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", shulker.fill(handler));
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("empty").executes(context -> {
+                ShulkerManager shulker = Modules.get().get(ShulkerManager.class);
+                if (shulker == null || !(mc.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> screen)
+                    || !(screen.getScreenHandler() instanceof net.minecraft.screen.ShulkerBoxScreenHandler handler)) {
+                    error("Open a shulker box first.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", shulker.empty(handler));
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("sort").executes(context -> {
+                ShulkerManager shulker = Modules.get().get(ShulkerManager.class);
+                if (shulker == null || !(mc.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> screen)
+                    || !(screen.getScreenHandler() instanceof net.minecraft.screen.ShulkerBoxScreenHandler handler)) {
+                    error("Open a shulker box first.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", shulker.sortShulker(handler));
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildWorkflow(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("workflow")
+            .executes(context -> {
+                workflowStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                workflowStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                WorkflowManager manager = WorkflowManager.get();
+                if (manager == null) {
+                    error("The workflow store is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                info("Workflows (%d):", manager.all().size());
+                for (var workflow : manager.all()) {
+                    info("  %s (%d steps)", workflow.name(), workflow.steps().size());
+                }
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("run")
+                .then(argument("name", StringArgumentType.greedyString()).executes(context -> {
+                    StorageMonitor monitor = Modules.get().get(StorageMonitor.class);
+                    if (monitor == null) {
+                        error("The storage monitor module is not loaded.");
+                        return SINGLE_SUCCESS;
+                    }
+                    info("%s", monitor.start(StringArgumentType.getString(context, "name")));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("stop").executes(context -> {
+                StorageMonitor monitor = Modules.get().get(StorageMonitor.class);
+                if (monitor != null) monitor.stop();
+                return SINGLE_SUCCESS;
+            }))
+        );
+
+        builder.then(literal("restock")
+            .executes(context -> {
+                restockPreview();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("preview").executes(context -> {
+                restockPreview();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("start").executes(context -> {
+                RestockManager restock = Modules.get().get(RestockManager.class);
+                if (restock == null) {
+                    error("The restock manager module is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", restock.start());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("stop").executes(context -> {
+                RestockManager restock = Modules.get().get(RestockManager.class);
+                if (restock != null) restock.stop();
+                info("Restock stopped.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildRoute(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("route")
+            .executes(context -> {
+                routeList();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("list").executes(context -> {
+                routeList();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("add").executes(context -> {
+                if (mc.player == null) return SINGLE_SUCCESS;
+                ExplorationStore store = ExplorationStore.get();
+                if (store == null) {
+                    error("Exploration store is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+
+                store.addWaypoint("waypoint-%d".formatted(store.customWaypoints().size() + 1),
+                    mc.player.getBlockPos(), ServerUtils.dimension());
+                info("Route waypoint added at %s. %d total.", ServerUtils.coordinates(), store.customWaypoints().size());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("add-at")
+                .then(argument("x", integer())
+                    .then(argument("z", integer())
+                        .executes(context -> {
+                            ExplorationStore store = ExplorationStore.get();
+                            if (store == null) return SINGLE_SUCCESS;
+
+                            store.addWaypoint("waypoint-%d".formatted(store.customWaypoints().size() + 1),
+                                new BlockPos(getInteger(context, "x"), 64, getInteger(context, "z")), ServerUtils.dimension());
+                            info("Route waypoint added. %d total.", store.customWaypoints().size());
+                            return SINGLE_SUCCESS;
+                        })
+                    )
+                )
+            )
+            .then(literal("clear").executes(context -> {
+                ExplorationStore store = ExplorationStore.get();
+                if (store != null) store.clearWaypoints();
+                info("Route waypoints cleared.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+
+        // The original v1 waypoint commands are kept so existing muscle memory still works.
         builder.then(literal("waypoint")
             .then(literal("add").executes(context -> {
                 BaseHunter hunter = Modules.get().get(BaseHunter.class);
@@ -110,20 +679,6 @@ public class BaseHuntCommand extends Command {
                 info("Waypoint added at %s. %d total.", ServerUtils.coordinates(), hunter.getWaypointCount());
                 return SINGLE_SUCCESS;
             }))
-            .then(literal("add-at")
-                .then(argument("x", integer())
-                    .then(argument("z", integer())
-                        .executes(context -> {
-                            BaseHunter hunter = Modules.get().get(BaseHunter.class);
-                            if (hunter == null) return SINGLE_SUCCESS;
-
-                            hunter.addWaypoint(new BlockPos(getInteger(context, "x"), 64, getInteger(context, "z")));
-                            info("Waypoint added. %d total.", hunter.getWaypointCount());
-                            return SINGLE_SUCCESS;
-                        })
-                    )
-                )
-            )
             .then(literal("clear").executes(context -> {
                 BaseHunter hunter = Modules.get().get(BaseHunter.class);
                 if (hunter != null) hunter.clearWaypoints();
@@ -131,62 +686,44 @@ public class BaseHuntCommand extends Command {
                 return SINGLE_SUCCESS;
             }))
         );
+    }
 
-        builder.then(literal("stashes").executes(context -> {
-            StashManager manager = StashManager.get();
-            if (manager == null) {
-                error("Stash store is not loaded.");
+    private void buildDatabase(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("database")
+            .executes(context -> {
+                databaseStatus();
                 return SINGLE_SUCCESS;
-            }
-
-            var stashes = manager.forCurrentServer();
-            if (stashes.isEmpty()) {
-                info("No stashes recorded for this server yet.");
+            })
+            .then(literal("status").executes(context -> {
+                databaseStatus();
                 return SINGLE_SUCCESS;
-            }
-
-            info("Stashes on %s:", ServerUtils.serverAddress());
-            for (StashManager.Stash stash : stashes) {
-                info("  %s %s [%s]", stash.kind, stash.pos.toShortString(), stash.describeCounts());
-            }
-
-            return SINGLE_SUCCESS;
-        }));
-
-        builder.then(literal("players").executes(context -> {
-            PlayerTracker tracker = PlayerTracker.get();
-            if (tracker == null) {
-                error("Player tracker is not loaded.");
+            }))
+            .then(literal("export").executes(context -> {
+                if (DatabaseIO.exportToFile()) info("Exported to %s.", DatabaseIO.exportFile().getAbsolutePath());
+                else error("Export failed, check the log.");
                 return SINGLE_SUCCESS;
-            }
-
-            var players = tracker.forCurrentServer();
-            if (players.isEmpty()) {
-                info("No players recorded for this server yet.");
+            }))
+            .then(literal("import").executes(context -> {
+                int applied = DatabaseIO.importFromFile();
+                if (applied == 0) error("Nothing imported. Is there an export file?");
+                else info("Imported %d section(s).", applied);
                 return SINGLE_SUCCESS;
-            }
+            }))
+            .then(literal("copy").executes(context -> {
+                if (DatabaseIO.exportToClipboard()) info("Copied the database to the clipboard.");
+                else error("Copy failed.");
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("paste").executes(context -> {
+                int applied = DatabaseIO.importFromClipboard();
+                if (applied == 0) error("Nothing imported from the clipboard.");
+                else info("Imported %d section(s).", applied);
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
 
-            info("Players seen on %s:", ServerUtils.serverAddress());
-            for (PlayerTracker.Entry entry : players) {
-                String logout = entry.hasLogoutSpot() ? "logout " + entry.logoutCoords() : "no logout spot";
-                info("  %s - last %s - %s", entry.name, entry.lastCoords(), logout);
-            }
-
-            return SINGLE_SUCCESS;
-        }));
-
-        builder.then(literal("clear").executes(context -> {
-            PlayerTracker tracker = PlayerTracker.get();
-            if (tracker != null) {
-                info("Removed %d player records.", tracker.clearCurrentServer());
-            }
-
-            PlayerLogger logger = Modules.get().get(PlayerLogger.class);
-            if (logger != null) logger.clearSpots();
-
-            return SINGLE_SUCCESS;
-        }));
-
+    private void buildWebhook(LiteralArgumentBuilder<CommandSource> builder) {
         builder.then(literal("webhook")
             .then(literal("test").executes(context -> {
                 WebhookNotifier notifier = Modules.get().get(WebhookNotifier.class);
@@ -200,6 +737,29 @@ public class BaseHuntCommand extends Command {
                 return SINGLE_SUCCESS;
             }))
         );
+    }
+
+    // Actions
+
+    private int startV2(String mode) {
+        BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+        if (hunter == null) {
+            error("Base Hunter V2 is unavailable.");
+            return SINGLE_SUCCESS;
+        }
+
+        BaseHunterV2.ExploreMode exploreMode = switch (mode.toLowerCase(java.util.Locale.ROOT)) {
+            case "grid" -> BaseHunterV2.ExploreMode.Grid;
+            case "spiral" -> BaseHunterV2.ExploreMode.Spiral;
+            case "heading" -> BaseHunterV2.ExploreMode.Heading;
+            default -> BaseHunterV2.ExploreMode.Adaptive;
+        };
+
+        if (!hunter.isActive()) hunter.enable();
+        hunter.setExploreMode(exploreMode);
+        hunter.start();
+        info("Base Hunter V2 started (%s mode).", exploreMode.name().toLowerCase(java.util.Locale.ROOT));
+        return SINGLE_SUCCESS;
     }
 
     private void flyTo(int x, int z) {
@@ -258,6 +818,29 @@ public class BaseHuntCommand extends Command {
                 v2.getQueuedCount(),
                 (long) v2.getTravelledBlocks());
         }
+
+        info("Elytra: %s", ElytraManager.status());
+    }
+
+    private void exploreStatus() {
+        ExplorationStore store = ExplorationStore.get();
+        if (store == null) {
+            error("Exploration store is not loaded.");
+            return;
+        }
+
+        info("Exploration");
+        info("Explored chunks: %,d", store.regions().exploredCount());
+        info("Needs another look: %,d", store.regions().reviewCount());
+        info("Route waypoints: %d", store.customWaypoints().size());
+
+        BaseHunterV2 v2 = Modules.get().get(BaseHunterV2.class);
+        if (v2 != null) {
+            info("V2: %s, %s mode, %d queued",
+                v2.isStarted() ? (v2.isPaused() ? "paused" : "flying") : "idle",
+                v2.getExploreMode().name().toLowerCase(java.util.Locale.ROOT),
+                v2.getQueuedCount());
+        }
     }
 
     private void v2Status() {
@@ -289,5 +872,352 @@ public class BaseHuntCommand extends Command {
         if (newChunks != null) {
             info("New chunks detected: %d", newChunks.getTrackedCount());
         }
+    }
+
+    private void stashList() {
+        StashManager manager = StashManager.get();
+        if (manager == null) {
+            error("Stash store is not loaded.");
+            return;
+        }
+
+        var stashes = manager.forCurrentServer();
+        if (stashes.isEmpty()) {
+            info("No stashes recorded for this server yet.");
+            return;
+        }
+
+        info("Stashes on %s (%d):", ServerUtils.serverAddress(), stashes.size());
+        for (StashManager.Stash stash : stashes) {
+            info("  %s %s [%s] score %d", stash.classification, stash.pos.toShortString(), stash.describeCounts(), stash.score());
+        }
+    }
+
+    private void stashNearby() {
+        if (mc.player == null) return;
+
+        StashManager manager = StashManager.get();
+        if (manager == null) {
+            error("Stash store is not loaded.");
+            return;
+        }
+
+        BlockPos player = mc.player.getBlockPos();
+        String dimension = ServerUtils.dimension();
+        int shown = 0;
+
+        for (StashManager.Stash stash : manager.forCurrentServer()) {
+            if (!stash.dimension.equals(dimension)) continue;
+
+            double distance = stash.pos.getSquaredDistance(player);
+            if (distance > 2048.0 * 2048.0) continue;
+
+            info("  %s %s (%d blocks away, score %d)",
+                stash.classification, stash.pos.toShortString(), (int) Math.sqrt(distance), stash.score());
+            shown++;
+            if (shown >= 20) break;
+        }
+
+        if (shown == 0) info("No stashes within 2048 blocks.");
+    }
+
+    private void stashSearch(String query) {
+        StashManager manager = StashManager.get();
+        if (manager == null) {
+            error("Stash store is not loaded.");
+            return;
+        }
+
+        String needle = query.toLowerCase(java.util.Locale.ROOT);
+        int shown = 0;
+
+        for (StashManager.Stash stash : manager.forCurrentServer()) {
+            if (!stash.classification.toLowerCase(java.util.Locale.ROOT).contains(needle)
+                && !stash.describeCounts().toLowerCase(java.util.Locale.ROOT).contains(needle)) continue;
+
+            info("  %s %s [%s] score %d", stash.classification, stash.pos.toShortString(), stash.describeCounts(), stash.score());
+            shown++;
+            if (shown >= 40) break;
+        }
+
+        if (shown == 0) info("No stashes matched '%s'.", query);
+    }
+
+    private void playerList() {
+        PlayerTracker tracker = PlayerTracker.get();
+        if (tracker == null) {
+            error("Player tracker is not loaded.");
+            return;
+        }
+
+        var players = tracker.forCurrentServer();
+        if (players.isEmpty()) {
+            info("No players recorded for this server yet.");
+            return;
+        }
+
+        info("Players seen on %s (%d):", ServerUtils.serverAddress(), players.size());
+        for (PlayerTracker.Entry entry : players) {
+            String logout = entry.hasLogoutSpot() ? "logout " + entry.logoutCoords() : "no logout spot";
+            info("  %s - last %s - %s", entry.name, entry.lastCoords(), logout);
+        }
+    }
+
+    private void playerSearch(String query) {
+        PlayerTracker tracker = PlayerTracker.get();
+        if (tracker == null) {
+            error("Player tracker is not loaded.");
+            return;
+        }
+
+        var results = tracker.search(query);
+        if (results.isEmpty()) {
+            info("No players matched '%s'.", query);
+            return;
+        }
+
+        info("Matches for '%s' (%d):", query, results.size());
+        for (PlayerTracker.Entry entry : results) {
+            info("  %s - %d sighting(s) - %s", entry.name, entry.sightings, entry.lastCoords());
+        }
+    }
+
+    private void playerHistory(String query) {
+        PlayerTracker tracker = PlayerTracker.get();
+        if (tracker == null) {
+            error("Player tracker is not loaded.");
+            return;
+        }
+
+        var results = tracker.search(query);
+        if (results.isEmpty()) {
+            info("No players matched '%s'.", query);
+            return;
+        }
+
+        PlayerTracker.Entry entry = results.get(0);
+        var sightings = tracker.sightingsFor(entry.uuid);
+
+        info("History for %s (%d sighting(s)):", entry.name, sightings.size());
+        int shown = 0;
+        for (PlayerTracker.Sighting sighting : sightings) {
+            info("  %s %s (%s)", sighting.coords(), sighting.dimension, formatAge(sighting.time));
+            if (++shown >= 25) break;
+        }
+    }
+
+    private void elytraStatus() {
+        info("Elytra: %s", ElytraManager.status());
+        info("Spare elytras: %d, best spare durability: %d",
+            ElytraManager.spareCount(), ElytraManager.bestSpareRemaining());
+        info("Flight state: %s", ElytraManager.flightState().name().toLowerCase(java.util.Locale.ROOT));
+
+        MendingManager mending = Modules.get().get(MendingManager.class);
+        if (mending != null && mending.isActive()) info("Mending: %s", mending.statusLine());
+    }
+
+    private void echestStatus() {
+        EnderChestManager manager = Modules.get().get(EnderChestManager.class);
+        if (manager == null) {
+            error("Ender chest manager is unavailable.");
+            return;
+        }
+
+        info("Ender chest manager: %s", manager.isActive() ? manager.statusLine() : "inactive");
+
+        EnderChestStore store = EnderChestStore.get();
+        info("Recorded ender chests on this server: %d", store == null ? 0 : store.forCurrentServer().size());
+    }
+
+    private void inventoryStatus() {
+        if (mc.player == null) return;
+
+        int free = 0;
+        for (int slot = 0; slot < net.minecraft.entity.player.PlayerInventory.MAIN_SIZE; slot++) {
+            if (mc.player.getInventory().getStack(slot).isEmpty()) free++;
+        }
+
+        info("Free inventory slots: %d", free);
+
+        SurvivalManager survival = Modules.get().get(SurvivalManager.class);
+        if (survival != null && survival.isActive()) info("Survival: %s", survival.statusLine());
+    }
+
+    private void storageStatus() {
+        StorageRegistry registry = StorageRegistry.get();
+        ContainerInteractionManager interaction = ContainerInteractionManager.get();
+        StorageMonitor monitor = Modules.get().get(StorageMonitor.class);
+
+        int containers = registry == null ? 0 : registry.forCurrentServer().size();
+        int verified = 0;
+        int reachable = 0;
+        if (registry != null) {
+            for (StorageRegistry.Container container : registry.forCurrentServer()) {
+                if (container.verified) verified++;
+                if (dev.basehunt.bhclient.utils.ContainerHelper.isReachable(container.pos)) reachable++;
+            }
+        }
+
+        info("Storage network");
+        info("Containers: %d on this server (%d observed, %d in reach)", containers, verified, reachable);
+        info("Interaction: %s", interaction == null ? "unavailable" : interaction.status());
+        info("Queue: %d", interaction == null ? 0 : interaction.queueSize());
+        if (monitor != null) info("Workflow: %s", monitor.engine().describe());
+
+        if (registry != null && registry.lastSkippedRecords() > 0) {
+            warning("Skipped %d unreadable container record(s) on the last load.", registry.lastSkippedRecords());
+        }
+
+        ContainerInteractionManager.Result last = interaction == null ? null : interaction.lastResult();
+        if (last != null) {
+            info("Last operation: %s %s (%s)",
+                last.success() ? "ok" : "failed", last.label(), last.message());
+        }
+    }
+
+    private void storageList() {
+        StorageRegistry registry = StorageRegistry.get();
+        if (registry == null) {
+            error("The storage registry is not loaded.");
+            return;
+        }
+
+        var containers = registry.forCurrentServer();
+        if (containers.isEmpty()) {
+            info("No containers registered on this server. Look at one and run /bh storage register.");
+            return;
+        }
+
+        info("Registered containers (%d):", containers.size());
+        for (StorageRegistry.Container container : containers) {
+            String contents = container.verified
+                ? "%d stack(s) seen %s".formatted(container.contents().size(), formatAge(container.lastInteraction))
+                : "not yet observed";
+            info("  %s - %s", container.describe(), contents);
+        }
+    }
+
+    private void shulkerStatus() {
+        info("Shulkers: %s", dev.basehunt.bhclient.systems.ShulkerManager.status());
+        for (var box : dev.basehunt.bhclient.systems.ShulkerManager.carried()) {
+            info("  slot %d: %s [%s]", box.slotIndex(), box.label(), box.status().name().toLowerCase(java.util.Locale.ROOT));
+        }
+    }
+
+    private void workflowStatus() {
+        StorageMonitor monitor = Modules.get().get(StorageMonitor.class);
+        if (monitor == null) {
+            error("The storage monitor module is not loaded.");
+            return;
+        }
+        info("Workflow: %s", monitor.engine().describe());
+        info("%s", monitor.report());
+    }
+
+    private void restockPreview() {
+        RestockManager restock = Modules.get().get(RestockManager.class);
+        if (restock == null) {
+            error("The restock manager module is not loaded.");
+            return;
+        }
+        var lines = restock.preview();
+        if (lines.isEmpty()) {
+            info("Everything is stocked up.");
+            return;
+        }
+        info("Restock preview:");
+        for (String line : lines) info("  %s", line);
+    }
+
+    private void routeList() {
+        ExplorationStore store = ExplorationStore.get();
+        if (store == null) {
+            error("Exploration store is not loaded.");
+            return;
+        }
+
+        var waypoints = store.customWaypoints();
+        if (waypoints.isEmpty()) {
+            info("No route waypoints set.");
+            return;
+        }
+
+        info("Route waypoints (%d):", waypoints.size());
+        for (int i = 0; i < waypoints.size(); i++) {
+            var waypoint = waypoints.get(i);
+            info("  %d. %s %s (%s)", i + 1, waypoint.label, waypoint.pos.toShortString(), waypoint.dimension);
+        }
+    }
+
+    private void recentEvents() {
+        AutomationManager manager = AutomationManager.get();
+        if (manager == null) {
+            error("The automation bus is not running.");
+            return;
+        }
+
+        var events = manager.bus().recent(20);
+        if (events.isEmpty()) {
+            info("No automation events recorded yet.");
+            return;
+        }
+
+        info("Recent automation events (%d):", events.size());
+        for (AutomationEvent event : events) {
+            info("  [%s] %s %s", event.type().name(), event.source(), describeEventData(event));
+        }
+    }
+
+    private String describeEventData(AutomationEvent event) {
+        if (event.data().isEmpty()) return "";
+
+        StringBuilder builder = new StringBuilder();
+        event.data().forEach((key, value) -> {
+            if (!builder.isEmpty()) builder.append(", ");
+            builder.append(key).append('=').append(value);
+        });
+        return builder.toString();
+    }
+
+    private void databaseStatus() {
+        StashManager stashes = StashManager.get();
+        PlayerTracker players = PlayerTracker.get();
+        EnderChestStore chests = EnderChestStore.get();
+        ExplorationStore exploration = ExplorationStore.get();
+
+        info("Database");
+        info("Stashes: %,d total, %,d on this server",
+            stashes == null ? 0 : stashes.getAll().size(),
+            stashes == null ? 0 : stashes.forCurrentServer().size());
+        info("Players: %,d total, %,d on this server",
+            players == null ? 0 : players.getAll().size(),
+            players == null ? 0 : players.forCurrentServer().size());
+        info("Sightings: %,d", players == null ? 0 : players.allSightings().size());
+        info("Ender chests: %,d on this server", chests == null ? 0 : chests.forCurrentServer().size());
+        info("Explored chunks: %,d", exploration == null ? 0 : exploration.regions().exploredCount());
+        info("Export file: %s", DatabaseIO.exportFileExists() ? DatabaseIO.exportFile().getName() : "none");
+
+        // A skipped count above zero means the file was partly corrupt and those records were dropped, which
+        // is worth telling the user about rather than losing silently.
+        int skipped = (stashes == null ? 0 : stashes.lastSkippedRecords())
+            + (players == null ? 0 : players.lastSkippedRecords())
+            + (chests == null ? 0 : chests.lastSkippedRecords())
+            + (exploration == null ? 0 : exploration.lastSkippedRecords());
+
+        if (skipped > 0) {
+            warning("Skipped %d unreadable record(s) on the last load; the rest of the database loaded fine.", skipped);
+        } else {
+            info("Integrity: all records readable.");
+        }
+    }
+
+    private static String formatAge(long timestamp) {
+        if (timestamp <= 0) return "unknown";
+
+        long seconds = (java.lang.System.currentTimeMillis() - timestamp) / 1000L;
+        if (seconds < 60) return seconds + "s ago";
+        if (seconds < 3600) return (seconds / 60) + "m ago";
+        if (seconds < 86400) return (seconds / 3600) + "h ago";
+        return (seconds / 86400) + "d ago";
     }
 }

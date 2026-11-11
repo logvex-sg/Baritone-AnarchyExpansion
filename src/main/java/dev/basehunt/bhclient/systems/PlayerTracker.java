@@ -19,9 +19,15 @@ import java.util.UUID;
  * only ever used as a display label.
  */
 public class PlayerTracker extends System<PlayerTracker> {
+    private static final int DB_VERSION = 2;
     private static final int MAX_ENTRIES_PER_SERVER = 5000;
+    private static final int MAX_SIGHTINGS = 4000;
 
     private final List<Entry> entries = new ArrayList<>();
+    /** Bounded log of individual sightings, used for the player-history view and location visualisation. */
+    private final List<Sighting> sightings = new ArrayList<>();
+    private int lastSkippedRecords;
+    private int lastLoadedVersion = DB_VERSION;
 
     public PlayerTracker() {
         super("base-hunting-players");
@@ -33,6 +39,49 @@ public class PlayerTracker extends System<PlayerTracker> {
 
     public List<Entry> getAll() {
         return entries;
+    }
+
+    public List<Sighting> allSightings() {
+        return sightings;
+    }
+
+    /** Sightings for a single player on the current server, newest first. */
+    public List<Sighting> sightingsFor(UUID uuid) {
+        String server = ServerUtils.serverAddress();
+        List<Sighting> result = new ArrayList<>();
+
+        for (Sighting sighting : sightings) {
+            if (sighting.server.equals(server) && sighting.uuid.equals(uuid)) result.add(sighting);
+        }
+
+        result.sort(Comparator.comparingLong((Sighting s) -> -s.time));
+        return result;
+    }
+
+    /** Case-insensitive substring search over the current server's known names. */
+    public List<Entry> search(String query) {
+        String needle = query == null ? "" : query.toLowerCase(java.util.Locale.ROOT).trim();
+        List<Entry> result = new ArrayList<>();
+
+        for (Entry entry : forCurrentServer()) {
+            if (needle.isEmpty() || entry.name.toLowerCase(java.util.Locale.ROOT).contains(needle)) result.add(entry);
+        }
+
+        return result;
+    }
+
+    /** Drops entries and sightings older than the given age. Returns how many entries were removed. */
+    public int expireOlderThan(long hours) {
+        if (hours <= 0) return 0;
+
+        long cutoff = java.lang.System.currentTimeMillis() - hours * 3_600_000L;
+        int before = entries.size();
+        entries.removeIf(entry -> entry.lastSeen < cutoff);
+        sightings.removeIf(sighting -> sighting.time < cutoff);
+
+        int removed = before - entries.size();
+        if (removed > 0) save();
+        return removed;
     }
 
     public List<Entry> forCurrentServer() {
@@ -77,7 +126,29 @@ public class PlayerTracker extends System<PlayerTracker> {
         entry.dimension = ServerUtils.dimension();
         entry.sightings++;
 
+        recordSighting(uuid, name, x, y, z);
         return entry;
+    }
+
+    /**
+     * Appends a sighting to the bounded history, unless the same player was already recorded at the same
+     * place within the last minute. Sightings are only useful as a location trail, so a stationary player
+     * must not fill the whole history.
+     */
+    public void recordSighting(UUID uuid, String name, int x, int y, int z) {
+        String server = ServerUtils.serverAddress();
+        long now = java.lang.System.currentTimeMillis();
+
+        for (int i = sightings.size() - 1; i >= 0; i--) {
+            Sighting last = sightings.get(i);
+            if (!last.uuid.equals(uuid) || !last.server.equals(server)) continue;
+
+            if (now - last.time < 60_000L && last.x == x && last.y == y && last.z == z) return;
+            break;
+        }
+
+        sightings.add(new Sighting(uuid, name, server, ServerUtils.dimension(), x, y, z));
+        while (sightings.size() > MAX_SIGHTINGS) sightings.remove(0);
     }
 
     /** Marks the player as having logged out; the next sighting starts a new session. */
@@ -155,10 +226,15 @@ public class PlayerTracker extends System<PlayerTracker> {
     @Override
     public NbtCompound toTag() {
         NbtCompound tag = new NbtCompound();
-        NbtList list = new NbtList();
+        tag.putInt("version", DB_VERSION);
 
+        NbtList list = new NbtList();
         for (Entry entry : entries) list.add(entry.toTag());
         tag.put("entries", list);
+
+        NbtList sightingList = new NbtList();
+        for (Sighting sighting : sightings) sightingList.add(sighting.toTag());
+        tag.put("sightings", sightingList);
 
         return tag;
     }
@@ -166,16 +242,92 @@ public class PlayerTracker extends System<PlayerTracker> {
     @Override
     public PlayerTracker fromTag(NbtCompound tag) {
         entries.clear();
+        sightings.clear();
 
-        NbtList list = tag.getListOrEmpty("entries");
-        for (NbtElement element : list) {
-            if (element instanceof NbtCompound compound) {
-                Entry entry = Entry.fromTag(compound);
-                if (entry != null) entries.add(entry);
-            }
+        // Every record is decoded defensively: a single unreadable entry must not lose the rest of the
+        // database, and a decoder that throws is treated exactly like one that returns null.
+        var decodedEntries = dev.basehunt.bhclient.core.logic.RecordCodec.decodeList(tag, "entries", Entry::fromTag);
+        entries.addAll(decodedEntries.records());
+
+        var decodedSightings = dev.basehunt.bhclient.core.logic.RecordCodec.decodeList(tag, "sightings", Sighting::fromTag);
+        sightings.addAll(decodedSightings.records());
+
+        lastSkippedRecords = decodedEntries.skipped() + decodedSightings.skipped();
+        lastLoadedVersion = dev.basehunt.bhclient.core.logic.RecordCodec.readVersion(tag, DB_VERSION);
+
+        if (lastSkippedRecords > 0) {
+            dev.basehunt.bhclient.BaseHuntingAddon.LOG.warn(
+                "Skipped {} unreadable player record(s) while loading.", lastSkippedRecords);
         }
 
         return this;
+    }
+
+    /** Records rejected by the last load. Zero unless the file was partly corrupt. */
+    public int lastSkippedRecords() {
+        return lastSkippedRecords;
+    }
+
+    /** Format version of the file that was last loaded. */
+    public int lastLoadedVersion() {
+        return lastLoadedVersion;
+    }
+
+    /** One observed position of one player at one time. */
+    public static class Sighting {
+        public UUID uuid;
+        public String name;
+        public String server;
+        public String dimension;
+        public int x, y, z;
+        public long time;
+
+        public Sighting(UUID uuid, String name, String server, String dimension, int x, int y, int z) {
+            this.uuid = uuid;
+            this.name = name;
+            this.server = server;
+            this.dimension = dimension;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.time = java.lang.System.currentTimeMillis();
+        }
+
+        public String coords() {
+            return "%d, %d, %d".formatted(x, y, z);
+        }
+
+        public NbtCompound toTag() {
+            NbtCompound tag = new NbtCompound();
+            tag.putString("uuid", uuid.toString());
+            tag.putString("name", name);
+            tag.putString("server", server);
+            tag.putString("dimension", dimension);
+            tag.putIntArray("pos", new int[] {x, y, z});
+            tag.putLong("time", time);
+            return tag;
+        }
+
+        public static Sighting fromTag(NbtCompound tag) {
+            String rawUuid = tag.getString("uuid", "");
+            if (rawUuid.isBlank()) return null;
+
+            UUID uuid;
+            try {
+                uuid = UUID.fromString(rawUuid);
+            } catch (IllegalArgumentException e) {
+                return null;
+            }
+
+            int[] pos = tag.getIntArray("pos").orElse(new int[0]);
+            if (pos.length != 3) return null;
+
+            Sighting sighting = new Sighting(uuid, tag.getString("name", "unknown"),
+                tag.getString("server", "unknown"), tag.getString("dimension", "unknown"),
+                pos[0], pos[1], pos[2]);
+            sighting.time = tag.getLong("time", sighting.time);
+            return sighting;
+        }
     }
 
     public static class Entry {

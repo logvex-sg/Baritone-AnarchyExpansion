@@ -9,17 +9,27 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-1.0.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.0.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + Meteor API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs `plannerTest` (FlightPlanner maths over packed
-chunk keys) and `apiContractTest` (asserts the Meteor/Minecraft members the addon drives still
-exist, reading them out of the dependency jars). Both are plain `main` classes rather than JUnit, so
-`tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
-failing the build. `verifyAddon` is wired into `check`, so `./gradlew build` runs it too.
+`verifyAddon` is the fast pre-flight check. It runs four plain `main` classes (not JUnit, which is
+why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
+failing the build), and is wired into `check`, so `./gradlew build` runs it too:
+
+- `plannerTest` — `FlightPlanner` maths over packed chunk keys.
+- `coreLogicTest` — the pure-logic suite: elytra durability, the deployment state machine, flight-state
+  classification, mending priorities, item classification, inventory planning, stash scoring, chunk
+  deduplication, persistence record recovery, target prioritisation, retry backoff, the exploration
+  planner, survival thresholds, the scheduler and the event bus. 175 assertions, no Minecraft classes,
+  so it catches arithmetic and state-machine regressions that would otherwise only appear mid-flight.
+- `storageLogicTest` — the storage suite: item classification, container layout, sort planning,
+  simulated sort correctness, protection rules, deposit/withdraw/pull transfers, item routing, restock
+  needs, shulker contents, operation state, workflows and category parsing. 131 assertions, again pure.
+- `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
+  out of the dependency jars.
 
 `./gradlew runClient` needs a display. In a headless container install Xvfb and use software GL:
 
@@ -57,14 +67,61 @@ Note that `./gradlew build` regenerates it; a stale path from a previous session
 ```
 src/main/java/dev/basehunt/bhclient/
 ├── BaseHuntingAddon.java        MeteorAddon entrypoint; registers systems, modules, commands, HUD
-├── commands/BaseHuntCommand.java  /basehunt (alias /bh)
+├── commands/BaseHuntCommand.java  /basehunt (alias /bh), grouped subcommands
+├── gui/BaseHuntingScreen.java   management screen (/bh gui): status, exploration, route, recent
+│                                activity, stash, player, equipment, survival, notification and
+│                                database sections
 ├── hud/BaseHuntingHud.java
+├── core/                        shared runtime coordination (no Minecraft types except ClientThread)
+│   ├── AutomationManager.java     hub: owns the bus + scheduler, ticks the scheduler
+│   ├── AutomationBus.java         publish/subscribe + bounded history
+│   ├── AutomationEvent.java       event record and Type enum
+│   ├── TaskScheduler.java         priority arbiter, one owner per ControlResource
+│   ├── Priority.java, ControlResource.java, Lease.java
+│   ├── ClientThread.java          runs work on the Minecraft client thread
+│   └── logic/                     pure, headlessly testable decision logic:
+│                                  ElytraDurability, ElytraDeployment, FlightState, MendingPriorities,
+│                                  ItemCategory, InventoryPlan, StashScorer, StashClassification,
+│                                  ExploredRegions, ExplorationPlanner, TargetPlanner, RetryPolicy,
+│                                  SurvivalStatus, RecordCodec (tolerant NBT list decoding),
+│                                  StorageCategory, ItemClassifier, ContainerLayout, SortPlanner,
+│                                  InventorySimulator, TransferPlanner, RestockPlanner, ShulkerInventory,
+│                                  ProtectionRules, ItemRoutingEngine, OperationState, WorkflowEngine
 ├── modules/                     BaseHunter (v1), BaseHunterV2, NewChunks, StashFinder,
-│                                PlayerLogger, AutoLog, WebhookNotifier
-├── systems/                     StashManager, PlayerTracker — persisted per-server state
-└── utils/                       BaritoneHelper, ElytraController, ElytraManager, FlightPlanner,
-                                 WebhookManager, ServerUtils, WebhookSettings
+│                                PlayerLogger, AutoLog, WebhookNotifier, MendingManager,
+│                                EnderChestManager, SurvivalManager,
+│                                InventoryManager, ChestSorter, StorageNetwork, ShulkerManager,
+│                                RestockManager, StorageMonitor
+├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
+│                                StorageRegistry, WorkflowManager (persisted per-server state),
+│                                DatabaseIO (export/import), StorageOperations (live container ↔
+│                                pure-planner bridge), ContainerInteractionManager (the one thing
+│                                that clicks slots), RestockManager, ShulkerManager
+└── utils/                       BaritoneHelper, ElytraController, ElytraManager, FlightController,
+                                 EquipmentScanner, FlightPlanner, WebhookManager, ServerUtils,
+                                 WebhookSettings, ContainerHelper, CategoryParser
 ```
+
+### Control and event flow
+
+Modules never call each other directly. There are exactly two coupling paths:
+
+1. **Events** — `AutomationManager.bus()` carries `AutomationEvent`s. A module publishes what happened
+   (a stash was found, an elytra was replaced, the inventory is full) and any module that cares
+   subscribes. `WebhookNotifier` is a single global subscriber that turns events into Discord alerts,
+   so adding a new event type needs no new webhook code.
+2. **Leases** — anything that touches the player (movement, rotation, inventory slots, equipment,
+   interaction) takes a `Lease` from `TaskScheduler` first. A resource has one owner at a time and a
+   higher `Priority` preempts a lower one. This is what stops two automations fighting over the same
+   controls. `AutomationManager.tryAcquire` is the entry point; a module that is refused must back off
+   for that tick rather than acting anyway. Leases carry a short timeout so a module that stops ticking
+   releases control on its own.
+
+The two persistent gotchas: `AutomationManager` is **not** a Meteor `System` or `Module`, so
+`install()` must subscribe it to `MeteorClient.EVENT_BUS` itself or its tick handler never runs and
+timed leases never expire; and `AutomationBus` logs through its own `LogUtils` logger rather than
+`BaseHuntingAddon.LOG`, because referencing the addon class from the bus pulls in `Category` →
+`Items` → registries and breaks the headless logic test.
 
 ## Conventions and gotchas
 
@@ -112,7 +169,102 @@ after a mid-air break.
 Scanning `0..size()` for spares therefore counts the elytra you are wearing and can select the chest
 slot as the replacement source. Always bound such scans with `PlayerInventory.MAIN_SIZE` (36).
 
-**Saved state** uses `StashManager`/`PlayerTracker` with NBT serialisation, keyed per server address.
+**Elytra replacement has exactly one owner.** `ElytraManager` performs every chest-slot swap; the
+`FlightController` decides *when* a swap is needed (`ElytraDeployment.decide`) and asks
+`ElytraManager` to do it. Nothing else writes the chest slot. `ElytraFly.replace` and `chestSwap` are
+pinned off for the same reason.
+
+**Mending treats XP as scarce.** `MendingManager` only moves a damaged item into the offhand when
+`hasXpSource()` is true (orbs are actually nearby, or bottles are carried and enabled). It never
+assumes XP will appear, and it restores whatever was in the offhand when it finishes. `AutoMend`'s
+behaviour of shuffling items around with no XP source is exactly what this avoids.
+
+**Ender chest work is normal client interaction.** `EnderChestManager` looks at the block and calls
+`interactBlock`, then operates on the resulting `GenericContainerScreenHandler` with `InvUtils`
+shift-clicks. No packets are forged. If the server refuses to open the chest the module reports
+`lastFailure()` rather than pretending it worked. Deposits never touch a category the user did not
+select, and a preview of every planned move is logged before the first click.
+
+**Database export/import replaces, it does not merge.** `DatabaseIO` writes every store into one NBT
+tag; importing applies each section it finds and leaves stores whose section is missing untouched, so
+an older or partial export cannot wipe data it does not describe. Each store is applied inside its own
+try/catch, so one malformed section cannot abort the whole import.
+
+**Saved state** uses `StashManager`, `PlayerTracker`, `EnderChestStore` and `ExplorationStore` with NBT
+serialisation, keyed per server address. All four are registered with `Systems.add(...)` *before*
+`Modules.get().add(...)` in `onInitialize()`; registering late discards their saved data on startup.
+`ExplorationStore` stores visited chunks as a `long[]` of packed `ChunkPos` keys and bounds the
+in-memory set (`ExploredRegions`) so a long session cannot grow without limit.
+
+**Persisted records decode tolerantly through `RecordCodec`.** All four stores write a `version` int and
+a list of record compounds; `fromTag` reads them via `RecordCodec.decodeList`, which skips an entry that
+is not a compound or whose decoder throws, and counts the skips. A single corrupt record must never cost
+the user the rest of the database. Each store exposes `lastSkippedRecords()` / `lastLoadedVersion()` and
+logs a warning when it skipped anything; `/bh database status` and the GUI Database section report the
+total. `RecordCodec` is pure NBT (no Fabric runtime needed), so `coreLogicTest.recordRecovery` covers
+the recovery and versioning behaviour headlessly. When you add a store, use `RecordCodec` rather than a
+hand-rolled loop, and bump the store's `DB_VERSION` when its record shape changes.
+
+**A listener that throws becomes a `SYSTEM_ERROR` event.** `AutomationBus.reportListenerFailure` catches
+the exception, logs it, and republishes a `SYSTEM_ERROR` event so the failure is visible without taking
+the client down. A `reportingFailure` guard stops that from recursing if a `SYSTEM_ERROR` listener itself
+throws, and the bus never reports a failure of a `SYSTEM_ERROR` event.
+
+### Storage subsystem
+
+Sorting, deposits, withdrawals, restocking, shulker work and workflows all share one architecture, and
+the invariants below are what keep six features from corrupting each other's clicks.
+
+**One thing clicks slots: `ContainerInteractionManager`.** Every storage feature plans moves and submits
+them to the manager; nothing else calls `InvUtils`. A submitted `Operation` holds an `INVENTORY` lease
+for its whole life and only one runs at a time, so two modules can never click concurrently. The manager
+is **not** a Module, so `install()` subscribes it to `MeteorClient.EVENT_BUS` itself; without that the
+queue never advances. It also cancels everything on `GameLeftEvent`.
+
+**Every operation is verified against a simulation, not assumed.** Before clicking, the manager snapshots
+the handler, applies the planned moves through `InventorySimulator`, and stores the expected fingerprint
+(`InventorySimulator.fingerprint`). After the clicks it waits for the live container to *match* that
+fingerprint before reporting success; a wrong settled state, a missing slot, or a timeout is a failure
+with a reason, never a silent success. `OperationState` drives this (opened → clicking → settled →
+done/failed). This is why the planners are pure: the same `InventorySimulator` is the spec and the
+checker.
+
+**A move is three clicks: source, destination, source.** That is a swap for two full stacks and a
+top-up for two stacks of the same item — the only two patterns the planners emit. Clicking an empty
+source at the end is a harmless no-op. Do not emit moves that need a different click pattern without
+extending `executeMove`.
+
+**Planners are pure and live in `core/logic`.** `StorageCategory` (category order + presets),
+`ItemClassifier` (item id → category), `SortPlanner` (inventory ordering with group merging),
+`TransferPlanner` (deposit / withdraw / category pull / item pull), `RestockPlanner` (profiles and
+needs), `ShulkerInventory` (read shulker contents from the `CONTAINER` component), `ProtectionRules`
+(never move these), `WorkflowEngine` (named step sequences), `OperationState`. They take plain data, not
+Minecraft types, so `storageLogicTest` covers them headlessly against the real remapped classes.
+
+**`ItemClassifier` matches by suffix, so ordering matters.** A nether star is rare, not nether; the
+rare check runs before the nether/end/ore checks. Keep that order when adding rules.
+
+**Slot ids, not indices, everywhere the manager is concerned.** The planners work in screen-handler slot
+ids. `StorageOperations` converts a live `ScreenHandler` into planner `Stack`s (`playerStacks`,
+`containerStacks`) and the player's empty slot ids, and it bounds every main-inventory scan with
+`PlayerInventory.MAIN_SIZE` (36) so the armour and offhand slots are never mistaken for storage.
+
+**Deposits only move categories the user selected.** A category not listed never moves, which is what
+keeps elytras, totems and shulkers out of a chest unless asked. `ProtectionRules` is a second gate, and
+`ChestSorter.reserveStacks` keeps a survival reserve in the inventory.
+
+**Shulker contents are only known when the component is present.** `ShulkerInventory` reads a carried
+box's contents from its item `CONTAINER` component; a box the client has never seen the inside of is
+reported as *unknown*, never as empty. Do not treat unknown as empty.
+
+**`StorageRegistry` records where containers are, not what is in them forever.** It persists per server
+and dimension through `RecordCodec`, and an observation updates a container's contents only when the
+container was actually opened. A `CONTAINER_OP_FAILED` event is published when an operation fails so the
+failure is visible in chat, the GUI and Discord.
+
+**Navigation reuses Baritone and degrades without it.** `StorageNetwork` and `RestockManager` walk with
+`BaritoneHelper` when it is available and refuse with a clear message when it is not; they never
+reference `baritone.*` types directly.
 
 ## Version pins
 

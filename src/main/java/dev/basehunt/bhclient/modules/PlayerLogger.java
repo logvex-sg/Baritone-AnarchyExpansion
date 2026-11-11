@@ -1,6 +1,8 @@
 package dev.basehunt.bhclient.modules;
 
 import dev.basehunt.bhclient.BaseHuntingAddon;
+import dev.basehunt.bhclient.core.AutomationEvent;
+import dev.basehunt.bhclient.core.AutomationManager;
 import dev.basehunt.bhclient.systems.PlayerTracker;
 import dev.basehunt.bhclient.utils.ServerUtils;
 import dev.basehunt.bhclient.utils.WebhookManager;
@@ -189,12 +191,29 @@ public class PlayerLogger extends Module {
             if (player == mc.player) continue;
             if (mc.player.squaredDistanceTo(player) > radiusSq) continue;
 
+            boolean isNew = tracker.get(player.getUuid()) == null;
+
             tracker.track(player.getUuid(), player.getName().getString(),
                 (int) player.getX(), (int) player.getY(), (int) player.getZ());
 
             if (logToChat.get()) {
                 info("%s at %d, %d, %d", player.getName().getString(),
                     (int) player.getX(), (int) player.getY(), (int) player.getZ());
+            }
+
+            // Publish once per sighting refresh (the tracker already dedupes its own history), so a
+            // subscriber can alert on a genuinely new player without the module knowing about webhooks.
+            if (isNew) {
+                AutomationManager manager = AutomationManager.get();
+                if (manager != null) {
+                    manager.publish(AutomationEvent.of(AutomationEvent.Type.PLAYER_SIGHTED, name,
+                        java.util.Map.of(
+                            "player", player.getName().getString(),
+                            "x", String.valueOf((int) player.getX()),
+                            "y", String.valueOf((int) player.getY()),
+                            "z", String.valueOf((int) player.getZ()),
+                            "dimension", ServerUtils.dimension())));
+                }
             }
         }
     }
@@ -257,6 +276,15 @@ public class PlayerLogger extends Module {
         if (chatFeedback.get()) {
             info("%s logged out at (highlight)%s (default)(%s).",
                 entry.name, entry.logoutCoords(), formatAge(entry.logoutTime));
+        }
+
+        AutomationManager manager = AutomationManager.get();
+        if (manager != null) {
+            manager.publish(AutomationEvent.of(AutomationEvent.Type.PLAYER_LOGOUT_SPOT, name,
+                java.util.Map.of(
+                    "player", entry.name,
+                    "logout", entry.logoutCoords(),
+                    "dimension", entry.logoutDimension)));
         }
 
         if (!notifyOnLogout.get() || !webhook.isEnabled() || WebhookSettings.globallyMuted()) return;
