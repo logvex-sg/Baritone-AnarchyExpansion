@@ -35,3 +35,6 @@ run/
 # dev client logs
 
 logs/
+
+# agent workspace (local memory, not part of the addon)
+.openhands/

@@ -116,6 +116,7 @@ public class BaseHuntCommand extends Command {
         buildExplore(builder);
         buildV2(builder);
         buildFly(builder);
+        buildBaritone(builder);
         buildStash(builder);
         buildPlayer(builder);
         buildElytra(builder);
@@ -229,12 +230,57 @@ public class BaseHuntCommand extends Command {
         );
     }
 
-    private void buildStash(LiteralArgumentBuilder<CommandSource> builder) {
-        builder.then(literal("stash")
+    private void buildBaritone(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("baritone")
             .executes(context -> {
-                stashList();
+                baritoneStatus();
                 return SINGLE_SUCCESS;
             })
+            .then(literal("status").executes(context -> {
+                baritoneStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("terms").executes(context -> {
+                BaseHunter hunter = Modules.get().get(BaseHunter.class);
+                if (hunter == null) {
+                    info("Base Hunter is not registered.");
+                } else if (!BaritoneHelper.usable()) {
+                    error("Baritone is not usable: %s", BaritoneHelper.health());
+                } else {
+                    hunter.acceptTerms();
+                }
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("stop").executes(context -> {
+                BaritoneHelper.stop();
+                info("Baritone pathing cancelled.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void baritoneStatus() {
+        info("Baritone: (highlight)%s", BaritoneHelper.AVAILABLE ? "installed" : "not installed");
+        if (!BaritoneHelper.AVAILABLE) {
+            info("  Base Hunter v1 needs Baritone. v2 flies without it.");
+            return;
+        }
+
+        String health = BaritoneHelper.health();
+        if (!health.isEmpty()) {
+            error("  Unusable: %s", health);
+            return;
+        }
+
+        info("  Version: (highlight)%s", BaritoneHelper.version());
+        info("  Primary instance: (highlight)%s", BaritoneHelper.get() != null ? "ready" : "missing");
+        info("  Pathing: %s, elytra flight: %s",
+            BaritoneHelper.isPathing() ? "yes" : "no",
+            BaritoneHelper.isElytraLoaded() ? "yes" : "no");
+    }
+
+    private void buildStash(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("stash")
             .then(literal("list").executes(context -> {
                 stashList();
                 return SINGLE_SUCCESS;

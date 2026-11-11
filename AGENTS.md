@@ -9,22 +9,23 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.1.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.2.0.jar
 ./gradlew compileJava    # fast syntax/type check
-./gradlew verifyAddon    # headless planner + Meteor API contract tests (no display needed)
+./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs five plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs six plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
 - `plannerTest` — `FlightPlanner` maths over packed chunk keys.
 - `coreLogicTest` — the pure-logic suite: elytra durability, the deployment state machine, flight-state
   classification, mending priorities, item classification, inventory planning, stash scoring, chunk
-  deduplication, persistence record recovery, target prioritisation, retry backoff, the exploration
-  planner, survival thresholds, the scheduler and the event bus. 175 assertions, no Minecraft classes,
-  so it catches arithmetic and state-machine regressions that would otherwise only appear mid-flight.
+  deduplication, persistence record recovery, target prioritisation, retry backoff (including the
+  bounded-deployment loop), the exploration planner, survival thresholds, the scheduler and the event
+  bus. 184 assertions, no Minecraft classes, so it catches arithmetic and state-machine regressions
+  that would otherwise only appear mid-flight.
 - `storageLogicTest` — the storage suite: item classification, container layout, sort planning,
   simulated sort correctness, protection rules, deposit/withdraw/pull transfers, item routing, restock
   needs, shulker contents, operation state, workflows and category parsing. 131 assertions, again pure.
@@ -33,6 +34,9 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
   the kit registry and response classifier, and the rule engine. 147 assertions, pure.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
+- `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
+  of the real Baritone jar (30 assertions). Baritone is compile-only, so a rename would compile here
+  and only fail at runtime; this catches it at build time.
 
 `./gradlew runClient` needs a display. In a headless container install Xvfb and use software GL:
 
@@ -156,7 +160,29 @@ timed leases never expire; and `AutomationBus` logs through its own `LogUtils` l
 addon must load without it. Never reference `baritone.*` types from a class that is initialised
 unconditionally — that throws `NoClassDefFoundError` when Baritone is absent. All access goes through
 `BaritoneHelper`, which probes for `baritone.api.BaritoneAPI` in a static block and exposes
-`AVAILABLE`. Anything needing Baritone must check `AVAILABLE` first and report a clear chat error.
+`AVAILABLE`. Anything needing Baritone must check it first and report a clear chat error.
+
+**Class presence is not usability.** Baritone bundles its elytra pathfinder as a nested jar
+(`nether-pathfinder`); when that nested jar fails to load, `BaritoneAPI`'s static initialiser throws
+and every later call into it throws too. `BaritoneHelper.AVAILABLE` therefore probes with the class
+*not* initialised, and `get()`/`usable()`/`health()` resolve the primary baritone once and cache the
+outcome and the reason. Modules guard with `usable()`, not `AVAILABLE`, so a half-broken Baritone
+degrades to "not usable" instead of crashing the addon. The static probe must never initialise
+`BaritoneAPI`, or a broken nested jar surfaces as an uncaught `ExceptionInInitializerError`.
+
+**Loom's `modLocalRuntime` does not unpack Baritone's nested jars.** Adding `modLocalRuntime(libs.baritone)`
+makes the dev client crash inside Baritone's own init (`NetherPathfinderContext` → JNA
+`NativeLibrary.loadLibrary` → `UnsatisfiedLinkError` for `libflite.so`). To test the addon with real
+Baritone, drop the release jar in `run/mods/` (e.g. `baritone-meteor-1.21.11-SNAPSHOT.jar`) and run
+the client; a successful load shows `Loading 10 mods`, `Path Manager: Baritone`, then the addon and
+Meteor init lines.
+
+**v1 flight deployment is bounded.** `BaseHunter` classifies the player's state (`FlightState`) and
+drives launches through a `RetryPolicy` (`deployPolicy`, rebuilt by `resetDeployPolicy()` from the
+`deploy-retries` setting). A failed launch is retried with backoff and then abandoned with a clear
+stop — never call `elytraPathTo` every tick, which is what the old code did. A new leg resets the
+budget. The addon owns elytra replacement (`ElytraManager`), so Baritone's own `elytraAutoSwap` is
+left `false`.
 
 **Systems must be registered before modules load.** `Systems.add(...)` for `StashManager` and
 `PlayerTracker` happens before `Modules.get().add(...)` in `onInitialize()`; otherwise their saved

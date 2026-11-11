@@ -3,6 +3,47 @@
 All notable changes to the Base Hunting Client. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-11-11
+
+The Baritone hardening release. The v1 Baritone autopilot no longer re-issues its flight path every
+tick, a launch that keeps failing is retried with backoff and then abandoned, and the whole Baritone
+API surface the addon drives is now verified against the real jar by a headless contract test.
+`./gradlew clean build` is green (36 + 147 + 184 + 30 + 21 + 131 headless assertions) and the addon
+loads in a real dev client with Baritone present and no exceptions.
+
+### Fixed — v1 autopilot no longer hammers a doomed launch
+
+- **Bounded flight deployment.** `BaseHunter` (v1) previously called `BaritoneHelper.elytraPathTo`
+  every client tick while not gliding, so a takeoff that could never succeed (no firework, a blocked
+  launch, a spent elytra) was retried 20 times a second forever. It now classifies the player's
+  physical state (`FlightState`) and drives launches through a `RetryPolicy`: a failed launch is
+  retried with exponential backoff (1s → 20s) and, after `deploy-retries` attempts (default 6), the
+  reason is reported once and the route stops cleanly. Swimming or climbing waits without spending an
+  attempt, and a new leg resets the budget.
+- **Baritone health, not just presence.** `BaritoneHelper.AVAILABLE` only proved the classes were on
+  the classpath. Baritone bundles its elytra pathfinder as a nested jar; when that fails to load,
+  `BaritoneAPI`'s static initialiser throws and every call into it throws too. The helper now probes
+  with the class *not* initialised and resolves the primary baritone once, caching the outcome and the
+  reason. `usable()` and `health()` let callers degrade to "not usable" instead of crashing, and every
+  guard in `BaseHunter` and `NavigationManager` uses them.
+- **One owner of elytra replacement.** v1's `applyBaritoneSettings` set `elytraAutoSwap = true`,
+  racing `ElytraManager` (the addon's single owner) to swap the same chest slot. It is now `false`.
+
+### Added — navigation, status and verification
+
+- **Elytra travel in `NavigationManager`.** Long-range navigation requests can now fly instead of only
+  walking, via `start(owner, destination, arrivalDistance, fly)`. Arrival and interruption detection
+  use `isMoving()` (path or elytra) rather than `isPathing()`, so an elytra leg is not mistaken for a
+  finished path.
+- **`/bh baritone` command group** — `status` (availability, version, primary instance, pathing and
+  flight state), `terms` (accept Baritone's elytra terms), and `stop` (cancel Baritone pathing).
+- **Baritone HUD line** — an optional `show-baritone` element reports availability, version and
+  whether Baritone is currently moving.
+- **`baritoneContractTest`** — a headless test that reads the real Baritone jar and asserts every
+  interface, process, goal, command-manager and elytra setting the addon drives still exists (30
+  assertions). It is wired into `verifyAddon`, so a Baritone rename is caught before release rather
+  than mid-flight on a user's machine.
+
 ## [2.1.0] — 2026-11-11
 
 The automation release. Adds a priority task engine, a declarative rule engine, an in-chat command

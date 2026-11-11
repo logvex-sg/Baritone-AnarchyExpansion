@@ -52,12 +52,14 @@ and a set of automatic managers (elytra, mending, ender chest, survival).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add Baritone for Meteor. Only Base Hunter v1 needs it; everything else works without it.
-4. Drop `basehunting-2.1.0.jar` into `mods`.
+4. Drop `basehunting-2.2.0.jar` into `mods`.
 5. Launch the game and look for the **Base Hunting** category in Meteor's module list.
 
 Baritone is declared as a `recommends`, not a `depends`, so the addon loads whether or not it is
-present. Every Baritone reference is resolved reflectively at runtime; anything that needs pathing
-reports a clear chat error when Baritone is missing instead of crashing the client.
+present. Every Baritone call is compiled against it but guarded by a runtime availability check in
+`BaritoneHelper`; anything that needs pathing reports a clear chat error when Baritone is missing or
+unusable instead of crashing the client. Run `/bh baritone status` to see what the addon thinks of your
+Baritone install.
 
 ## Quick start
 
@@ -547,6 +549,7 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh stop` | Stop the autopilot, or cancel Baritone pathing |
 | `/bh pause` / `/bh resume` | Pause / resume the active route |
 | `/bh fly <x> <z>` | Enable Base Hunter v1 and start a route to those coordinates |
+| `/bh baritone` / `status` / `terms` / `stop` | Baritone availability, version and flight state; accept its elytra terms; cancel pathing |
 
 ### Exploration
 
@@ -661,8 +664,9 @@ abort the whole import.
 
 ## Troubleshooting
 
-**"Baritone is not installed, cannot fly."** — Base Hunter v1 needs Baritone. Use Base Hunter V2, which
-does not.
+**"Baritone is not usable: ..."** — Base Hunter v1 needs Baritone. Use Base Hunter V2, which does not.
+If Baritone is installed but reported unusable, its bundled elytra pathfinder (a nested jar) failed to
+load; run `/bh baritone status` for the reason.
 
 **"Meteor's Elytra Fly module is unavailable, cannot fly."** — ElytraFly was renamed or removed in your
 Meteor build. V2 cannot fly without it.
@@ -693,7 +697,7 @@ the addon. See the build notes in `AGENTS.md` about Xvfb and software GL.
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.1.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.2.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded

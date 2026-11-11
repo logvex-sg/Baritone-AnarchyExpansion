@@ -58,6 +58,7 @@ public class CoreLogicTest {
         recordRecovery();
         targetPrioritisation();
         retryPolicy();
+        boundedDeployment();
         explorationPlanner();
         survivalThresholds();
         scheduler();
@@ -477,6 +478,61 @@ public class CoreLogicTest {
         policy.reset();
         check("reset clears attempts", policy.attempts() == 0 && !policy.exhausted(), "not reset");
         check("backoff never exceeds the cap", new RetryPolicy(10, 100, 500).millisUntilNextAttempt(0) >= 0, "negative");
+    }
+
+    /**
+     * The rule Base Hunter v1's Baritone autopilot follows: a launch that keeps failing is retried with
+     * backoff and then abandoned, never re-issued every tick forever. This models the exact loop the module
+     * runs (classify state, gate on the policy, record an attempt) so a regression in the composition is
+     * caught headlessly rather than in the air.
+     */
+    static void boundedDeployment() {
+        section("bounded flight deployment");
+
+        // Swimming cannot deploy: the loop must wait without spending an attempt.
+        boolean attemptedWhileSwimming = false;
+        for (long t = 0; t < 100_000; t += 50) {
+            if (FlightState.SWIMMING.canDeploy()) attemptedWhileSwimming = true;
+        }
+        check("a launch is never attempted while swimming", !attemptedWhileSwimming, "attempted");
+
+        // A grounded player with a healthy retry gate launches immediately.
+        RetryPolicy ok = new RetryPolicy(6, 1000, 20000);
+        check("first launch allowed from the ground",
+            FlightState.GROUNDED.canDeploy() && ok.canAttempt(0), "blocked");
+
+        // A launch that never succeeds is bounded: exactly the configured number of attempts, then exhausted.
+        RetryPolicy stuck = new RetryPolicy(4, 1000, 20000);
+        int issued = 0;
+        long now = 0;
+        while (!stuck.exhausted() && now < 600_000) {
+            if (stuck.canAttempt(now)) {
+                stuck.recordAttempt(now);
+                issued++;
+            }
+            now += 50; // 20 ticks per second
+        }
+        check("a failing launch is capped at the configured attempts", issued == 4, "issued " + issued);
+        check("the policy reports exhaustion", stuck.exhausted(), "not exhausted");
+        check("an exhausted policy refuses further attempts at any time",
+            !stuck.canAttempt(now + 10_000_000), "allowed");
+
+        // Backoff grows, so a doomed launch does not spin at full tick rate.
+        RetryPolicy backoff = new RetryPolicy(6, 1000, 20000);
+        backoff.recordAttempt(0);
+        long firstGap = backoff.millisUntilNextAttempt(0);
+        backoff.recordAttempt(firstGap);
+        long secondGap = backoff.millisUntilNextAttempt(firstGap);
+        check("the gap between attempts grows", secondGap > firstGap, firstGap + " then " + secondGap);
+        check("the gap is capped", secondGap <= 20000, "got " + secondGap);
+
+        // A fresh leg resets the budget, so a failure on the previous leg does not carry over.
+        RetryPolicy leg = new RetryPolicy(2, 1000, 20000);
+        leg.recordAttempt(0);
+        leg.recordAttempt(5000);
+        check("a leg can exhaust its budget", leg.exhausted(), "not exhausted");
+        leg.reset();
+        check("a new leg gets a fresh budget", !leg.exhausted() && leg.attempts() == 0, "not reset");
     }
 
     static void explorationPlanner() {
