@@ -39,7 +39,15 @@ public final class SortPlanner {
 
     public enum Kind {
         SWAP,
-        MERGE
+        MERGE,
+        /**
+         * Move exactly {@code amount} items from one slot into another, where {@code amount} is between 1 and
+         * the source stack's count. A whole-stack move is expressed as a SWAP; a TRANSFER is the partial case,
+         * which is what an exact-quantity withdrawal or deposit needs. It is executed as a pick-up, then
+         * {@code amount} single-item places, then a put-back of the remainder, and the simulator models exactly
+         * that, so a partial move can be verified like any other.
+         */
+        TRANSFER
     }
 
     /** A single click operation. {@code fromSlot} and {@code toSlot} are player-inventory slot indices. */
@@ -47,6 +55,11 @@ public final class SortPlanner {
         public String describe() {
             return "%s %d -> %d%s".formatted(kind.name().toLowerCase(), fromSlot, toSlot,
                 amount > 0 ? " (" + amount + ")" : "");
+        }
+
+        /** How many client clicks this move costs, for the operation's budget and timeout estimate. */
+        public int clickCost() {
+            return kind == Kind.TRANSFER ? Math.max(1, amount) + 2 : 3;
         }
     }
 

@@ -80,7 +80,15 @@ tasks.register<JavaExec>("apiContractTest") {
 tasks.register("verifyAddon") {
     group = "verification"
     description = "Runs the headless planner and API contract tests."
-    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "apiContractTest")
+    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "automationLogicTest", "apiContractTest")
+}
+
+tasks.register<JavaExec>("automationLogicTest") {
+    group = "verification"
+    description = "Runs the task queue, quantity transfer, protection, chat, kit and rule engine tests."
+    dependsOn("testClasses")
+    classpath = sourceSets.test.get().runtimeClasspath + sourceSets.test.get().output
+    mainClass.set("dev.basehunt.bhclient.AutomationLogicTest")
 }
 
 tasks.register<JavaExec>("storageLogicTest") {

@@ -4,12 +4,18 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.basehunt.bhclient.core.AutomationEvent;
 import dev.basehunt.bhclient.core.AutomationManager;
+import dev.basehunt.bhclient.core.task.Task;
+import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.gui.BaseHuntingScreen;
 import dev.basehunt.bhclient.modules.BaseHunter;
+import dev.basehunt.bhclient.modules.AutoStorage;
+import dev.basehunt.bhclient.modules.AutomationBrain;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
+import dev.basehunt.bhclient.modules.ChatCommands;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
+import dev.basehunt.bhclient.modules.KitBot;
 import dev.basehunt.bhclient.modules.MendingManager;
 import dev.basehunt.bhclient.modules.NewChunks;
 import dev.basehunt.bhclient.modules.PlayerLogger;
@@ -35,6 +41,8 @@ import meteordevelopment.meteorclient.gui.GuiThemes;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import net.minecraft.command.CommandSource;
 import net.minecraft.util.math.BlockPos;
+
+import java.util.List;
 
 import static com.mojang.brigadier.arguments.IntegerArgumentType.getInteger;
 import static com.mojang.brigadier.arguments.IntegerArgumentType.integer;
@@ -119,6 +127,10 @@ public class BaseHuntCommand extends Command {
         buildRoute(builder);
         buildDatabase(builder);
         buildWebhook(builder);
+        buildTasks(builder);
+        buildTransfer(builder);
+        buildKit(builder);
+        buildTerminal(builder);
     }
 
     // Groups
@@ -737,6 +749,255 @@ public class BaseHuntCommand extends Command {
                 return SINGLE_SUCCESS;
             }))
         );
+    }
+
+    private void buildTasks(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("tasks")
+            .executes(context -> {
+                tasksStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                tasksStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                tasksStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("cancel")
+                .then(argument("id", integer(1)).executes(context -> {
+                    AutomationEngine engine = AutomationEngine.get();
+                    if (engine == null) {
+                        error("The automation engine is not running.");
+                        return SINGLE_SUCCESS;
+                    }
+                    int id = getInteger(context, "id");
+                    if (engine.cancel(id)) info("Cancelled task #%d.", id);
+                    else error("No active or queued task #%d.", id);
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("cancelall").executes(context -> {
+                AutomationEngine engine = AutomationEngine.get();
+                if (engine == null) {
+                    error("The automation engine is not running.");
+                    return SINGLE_SUCCESS;
+                }
+                int count = engine.cancelAll("cancelled by command");
+                info("Cancelled %d task(s).", count);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("clear").executes(context -> {
+                AutomationEngine engine = AutomationEngine.get();
+                if (engine == null) {
+                    error("The automation engine is not running.");
+                    return SINGLE_SUCCESS;
+                }
+                engine.queue().clearHistory();
+                info("Cleared the task history.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+
+        builder.then(literal("automation")
+            .executes(context -> {
+                automationStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                automationStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("reactions").executes(context -> {
+                AutomationBrain brain = Modules.get().get(AutomationBrain.class);
+                if (brain == null) {
+                    error("The automation brain is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                info("Reactions:");
+                for (String line : brain.recent()) info("  %s", line);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("start").executes(context -> {
+                AutomationBrain brain = Modules.get().get(AutomationBrain.class);
+                if (brain == null) {
+                    error("The automation brain is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                if (!brain.isActive()) brain.enable();
+                info("Automation brain enabled.");
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("stop").executes(context -> {
+                AutomationBrain brain = Modules.get().get(AutomationBrain.class);
+                if (brain != null && brain.isActive()) brain.disable();
+                info("Automation brain disabled.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void buildTransfer(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("withdraw")
+            .then(argument("item", StringArgumentType.word())
+                .executes(context -> withdraw(StringArgumentType.getString(context, "item"), 0))
+                .then(argument("amount", integer(1)).executes(context -> withdraw(
+                    StringArgumentType.getString(context, "item"), getInteger(context, "amount"))))
+            )
+        );
+
+        builder.then(literal("deposit")
+            .then(argument("item", StringArgumentType.word())
+                .executes(context -> deposit(StringArgumentType.getString(context, "item"), 0))
+                .then(argument("amount", integer(1)).executes(context -> deposit(
+                    StringArgumentType.getString(context, "item"), getInteger(context, "amount"))))
+            )
+        );
+
+        builder.then(literal("grab").executes(context -> {
+            // A convenience: withdraw the whole first argument, all of it.
+            error("Usage: /bh withdraw <item> [amount]");
+            return SINGLE_SUCCESS;
+        }));
+    }
+
+    private void buildKit(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("kit")
+            .executes(context -> {
+                kitStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                kitStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                kitStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("claim")
+                .then(argument("name", StringArgumentType.word()).executes(context -> {
+                    KitBot bot = Modules.get().get(KitBot.class);
+                    if (bot == null) {
+                        error("The kit bot is not loaded.");
+                        return SINGLE_SUCCESS;
+                    }
+                    info("%s", bot.claim(StringArgumentType.getString(context, "name")));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("all").executes(context -> {
+                KitBot bot = Modules.get().get(KitBot.class);
+                if (bot == null) {
+                    error("The kit bot is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                info("%s", bot.claimAll());
+                return SINGLE_SUCCESS;
+            }))
+        );
+
+        builder.then(literal("kits").executes(context -> {
+            kitStatus();
+            return SINGLE_SUCCESS;
+        }));
+    }
+
+    private void buildTerminal(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("chat")
+            .executes(context -> {
+                ChatCommands commands = Modules.get().get(ChatCommands.class);
+                if (commands == null) {
+                    error("The chat command module is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                info("Run a command with <prefix><name> in chat. Type <prefix>help for the list.");
+                info("Commands: %s", String.join(", ", commands.registry().names()));
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("run")
+                .then(argument("line", StringArgumentType.greedyString()).executes(context -> {
+                    ChatCommands commands = Modules.get().get(ChatCommands.class);
+                    if (commands == null) {
+                        error("The chat command module is not loaded.");
+                        return SINGLE_SUCCESS;
+                    }
+                    String line = StringArgumentType.getString(context, "line");
+                    info("Result: %s", commands.runLine(line));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+        );
+    }
+
+    // Actions
+
+    private int withdraw(String item, int amount) {
+        AutoStorage storage = Modules.get().get(AutoStorage.class);
+        if (storage == null) {
+            error("The auto-storage module is not loaded.");
+            return SINGLE_SUCCESS;
+        }
+        info("%s", storage.withdraw(item, amount));
+        return SINGLE_SUCCESS;
+    }
+
+    private int deposit(String item, int amount) {
+        AutoStorage storage = Modules.get().get(AutoStorage.class);
+        if (storage == null) {
+            error("The auto-storage module is not loaded.");
+            return SINGLE_SUCCESS;
+        }
+        info("%s", storage.deposit(item, amount));
+        return SINGLE_SUCCESS;
+    }
+
+    private void tasksStatus() {
+        AutomationEngine engine = AutomationEngine.get();
+        if (engine == null) {
+            error("The automation engine is not running.");
+            return;
+        }
+
+        info("Automation tasks");
+        if (engine.queue().active() != null) info("Active: %s", engine.queue().active().describe());
+        else info("Active: none");
+
+        List<Task> queued = engine.queue().queued();
+        info("Queued: %d", queued.size());
+        for (Task task : queued) info("  %s", task.describe());
+
+        List<Task> history = engine.queue().history();
+        if (!history.isEmpty()) {
+            info("Recent:");
+            for (Task task : history.subList(0, Math.min(5, history.size()))) info("  %s", task.describe());
+        }
+    }
+
+    private void automationStatus() {
+        info("Automation");
+        AutomationEngine engine = AutomationEngine.get();
+        info("Engine: %s", engine == null ? "unavailable" : engine.statusLine());
+
+        AutomationBrain brain = Modules.get().get(AutomationBrain.class);
+        info("Brain: %s", brain == null || !brain.isActive() ? "inactive" : brain.statusLine());
+
+        AutoStorage storage = Modules.get().get(AutoStorage.class);
+        info("Auto-storage: %s", storage == null || !storage.isActive() ? "inactive" : storage.statusLine());
+
+        AutomationManager manager = AutomationManager.get();
+        info("Control: %s", manager == null ? "unavailable" : manager.controlSummary());
+    }
+
+    private void kitStatus() {
+        KitBot bot = Modules.get().get(KitBot.class);
+        if (bot == null) {
+            error("The kit bot is not loaded.");
+            return;
+        }
+        info("Kits");
+        for (String line : bot.describe()) info("  %s", line);
     }
 
     // Actions

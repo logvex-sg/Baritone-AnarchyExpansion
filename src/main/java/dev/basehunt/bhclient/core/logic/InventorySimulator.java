@@ -58,6 +58,25 @@ public final class InventorySimulator {
                 slots.put(move.toSlot(), new Slot(move.toSlot(), cursor.key(), cursor.name(), cursor.count()));
                 slots.put(move.fromSlot(), new Slot(move.fromSlot(), to.key(), to.name(), to.count()));
                 cursor = new Cursor(null, null, 0);
+            } else if (move.kind() == SortPlanner.Kind.TRANSFER) {
+                // Pick up the whole source stack, place exactly `amount` items one at a time, then put the
+                // remainder back where it came from. Modelled click-for-click so a partial move verifies.
+                Slot to = slots.getOrDefault(move.toSlot(), new Slot(move.toSlot(), null, null, 0));
+                if (!to.isEmpty() && !to.key().equals(cursor.key())) {
+                    throw new IllegalStateException("TRANSFER would mix items in slot " + move.toSlot());
+                }
+
+                int amount = Math.max(0, Math.min(move.amount(), cursor.count()));
+                if (to.count() + amount > maxPerSlot) {
+                    throw new IllegalStateException("TRANSFER would overflow slot " + move.toSlot());
+                }
+
+                String key = to.isEmpty() ? cursor.key() : to.key();
+                String name = to.isEmpty() ? cursor.name() : to.name();
+                slots.put(move.toSlot(), new Slot(move.toSlot(), key, name, to.count() + amount));
+                slots.put(move.fromSlot(), new Slot(move.fromSlot(), cursor.key(), cursor.name(),
+                    cursor.count() - amount));
+                cursor = new Cursor(null, null, 0);
             } else {
                 // MERGE: top up the destination, leave the remainder on the cursor.
                 Slot to = slots.getOrDefault(move.toSlot(), new Slot(move.toSlot(), null, null, 0));

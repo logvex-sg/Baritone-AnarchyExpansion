@@ -1,10 +1,13 @@
 package dev.basehunt.bhclient.gui;
 
+import dev.basehunt.bhclient.modules.AutoStorage;
+import dev.basehunt.bhclient.modules.AutomationBrain;
 import dev.basehunt.bhclient.modules.BaseHunter;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
+import dev.basehunt.bhclient.modules.KitBot;
 import dev.basehunt.bhclient.modules.MendingManager;
 import dev.basehunt.bhclient.modules.NewChunks;
 import dev.basehunt.bhclient.modules.PlayerLogger;
@@ -18,6 +21,8 @@ import dev.basehunt.bhclient.modules.WebhookNotifier;
 import dev.basehunt.bhclient.core.AutomationEvent;
 import dev.basehunt.bhclient.core.AutomationManager;
 import dev.basehunt.bhclient.core.logic.SurvivalStatus;
+import dev.basehunt.bhclient.core.task.Task;
+import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.systems.ContainerInteractionManager;
 import dev.basehunt.bhclient.systems.DatabaseIO;
 import dev.basehunt.bhclient.systems.EnderChestStore;
@@ -68,6 +73,7 @@ public class BaseHuntingScreen extends WindowScreen {
     @Override
     public void initWidgets() {
         statusSection();
+        automationSection();
         explorationSection();
         routeSection();
         activitySection();
@@ -125,9 +131,75 @@ public class BaseHuntingScreen extends WindowScreen {
         };
     }
 
+    private void automationSection() {
+        add(theme.section("Automation")).expandX().widget();
+
+        AutomationEngine engine = AutomationEngine.get();
+        AutomationBrain brain = Modules.get().get(AutomationBrain.class);
+        AutoStorage storage = Modules.get().get(AutoStorage.class);
+        KitBot kits = Modules.get().get(KitBot.class);
+
+        add(theme.label("Engine: " + (engine == null ? "unavailable" : engine.statusLine())));
+        add(theme.label("Brain: " + (brain == null || !brain.isActive() ? "inactive" : brain.statusLine())));
+        add(theme.label("Auto-storage: " + (storage == null || !storage.isActive() ? "inactive" : storage.statusLine())));
+        add(theme.label("Kits: " + (kits == null || !kits.isActive() ? "inactive" : kits.statusLine())));
+
+        if (engine != null) {
+            Task active = engine.queue().active();
+            add(theme.label("Active task: " + (active == null ? "none" : active.describe())));
+            add(theme.label("Queued: %d, finished: %d".formatted(
+                engine.queue().queueSize(), engine.queue().history().size())));
+        }
+
+        AutomationManager manager = AutomationManager.get();
+        add(theme.label("Control: " + (manager == null ? "unavailable" : manager.controlSummary())));
+
+        var row1 = add(theme.horizontalList()).expandX().widget();
+        WButton brainToggle = row1.add(theme.button(brain != null && brain.isActive() ? "Brain Off" : "Brain On"))
+            .expandX().widget();
+        brainToggle.action = () -> {
+            if (brain != null) brain.toggle();
+            reload();
+        };
+
+        WButton storageToggle = row1.add(theme.button(storage != null && storage.isActive()
+            ? "Storage Off" : "Storage On")).expandX().widget();
+        storageToggle.action = () -> {
+            if (storage != null) storage.toggle();
+            reload();
+        };
+
+        WButton kitToggle = row1.add(theme.button(kits != null && kits.isActive() ? "Kits Off" : "Kits On"))
+            .expandX().widget();
+        kitToggle.action = () -> {
+            if (kits != null) kits.toggle();
+            reload();
+        };
+
+        var row2 = add(theme.horizontalList()).expandX().widget();
+
+        WButton claimAll = row2.add(theme.button("Claim Kits")).expandX().widget();
+        claimAll.action = () -> {
+            if (kits == null) infoLine("The kit bot is not loaded.");
+            else infoLine(kits.claimAll());
+            reload();
+        };
+
+        WButton cancel = row2.add(theme.button("Cancel Tasks")).expandX().widget();
+        cancel.action = () -> {
+            if (engine != null) infoLine("Cancelled %d task(s).".formatted(engine.cancelAll("cancelled from GUI")));
+            reload();
+        };
+
+        WButton reactions = row2.add(theme.button("Reactions")).expandX().widget();
+        reactions.action = () -> {
+            if (brain != null) for (String line : brain.recent()) infoLine("  " + line);
+            reload();
+        };
+    }
+
     private void explorationSection() {
         add(theme.section("Exploration")).expandX().widget();
-
         ExplorationStore store = ExplorationStore.get();
         int explored = store == null ? 0 : store.regions().exploredCount();
         int review = store == null ? 0 : store.regions().reviewCount();

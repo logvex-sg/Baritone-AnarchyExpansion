@@ -43,9 +43,18 @@ Built for Minecraft 1.21.11 (Fabric). **Full manual: [docs/GUIDE.md](docs/GUIDE.
 - **Restock Manager** — tops up travel supplies from your registered storage before a trip.
 - **Storage Monitor** — runs named storage workflows ("sort, deposit, restock, report") and is the
   single status view for the whole storage system.
+- **Automation Brain** — reacts to events and player facts (low health, a filling inventory, a failing
+  elytra, a player sighting) and turns them into queued tasks, so no two features fight over the
+  player.
+- **Chat Commands** — run addon commands from Minecraft chat behind a prefix (`!help`, `.bh tasks`),
+  with only locally typed lines ever executed and destructive commands gated behind permissions.
+- **Kit Bot** — claims server kits and remembers their cooldowns per server, adopting a server-side
+  cooldown instead of spamming a claim it will reject.
+- **Auto Storage** — exact-quantity withdrawals, deposits and restocks run as queued tasks, so
+  "withdraw exactly 64 ender pearls" either moves 64 or tells you why it could not.
 
-The whole system is coordinated through a shared event bus and a priority scheduler, so no two
-automations ever fight over the player. See [How the automation decides
+The whole system is coordinated through a shared event bus, a priority scheduler and a single task
+engine, so no two automations ever fight over the player. See [How the automation decides
 things](docs/GUIDE.md#how-the-automation-decides-things).
 
 ## Install
@@ -53,7 +62,7 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `basehunting-2.0.0.jar` into `mods`.
+4. Drop `basehunting-2.1.0.jar` into `mods`.
 5. Launch the game and look for the **Base Hunting** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
@@ -99,6 +108,11 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh route list` / `add` / `add-at <x> <z>` / `clear` | Route waypoints |
 | `/bh database status` / `export` / `import` / `copy` / `paste` | Persistence and backups |
 | `/bh webhook test` | Send a test message to the configured webhook |
+| `/bh automation` / `start` / `stop` / `reactions` | Automation brain status, enable, disable, recent reactions |
+| `/bh tasks` / `tasks status` | The active and queued automation tasks |
+| `/bh withdraw <item> [amount]` / `deposit <item> [amount]` | Exact-quantity transfer, as a queued task |
+| `/bh kit status` / `list` / `claim <name>` / `all` | Server kit status and claiming |
+| `/bh chat run <line>` | Run a chat command line as if you had typed it |
 
 ## Webhook setup
 
@@ -143,10 +157,15 @@ All under the **Base Hunting** category in Meteor's module list.
 | `shulker-manager` | off | Fills, empties, sorts and searches shulker boxes |
 | `restock-manager` | off | Tops up travel supplies from storage |
 | `storage-monitor` | off | Runs storage workflows and reports storage status |
+| `automation-brain` | off | Reacts to events/facts and queues automation tasks |
+| `chat-commands` | off | Runs addon commands typed in chat behind a prefix |
+| `kit-bot` | off | Claims server kits and tracks their cooldowns |
+| `auto-storage` | off | Exact-quantity withdrawals, deposits and restocks as tasks |
 
 There is also a **Base Hunting** HUD element with individual toggles for server, position, dimension,
 flight state, new-chunk/stash/player counts, autopilot target and distance, elytra durability, mending
-status, fireworks, free slots, survival warning, exploration progress and control ownership.
+status, fireworks, free slots, survival warning, exploration progress, control ownership, the active
+automation task and the kit status.
 
 ## Configuration notes
 
@@ -192,6 +211,55 @@ settings are worth understanding:
   walk to storage that is out of reach.
 - **Storage Monitor → workflow / run-on-activate / step-delay** — which workflow runs and how long to
   wait between steps.
+- **Auto Storage → protected-items / allow-partial / travel-to-containers / prefer-nearest** — items
+  automation may never move, whether a short transfer succeeds partially, whether to walk to a
+  registered container, and whether to choose the nearest one holding the item.
+- **Kit Bot → kits / claim-on-join / join-delay / recheck-cooldown / claim-delay** — the kits
+  (`name:command:cooldown`), whether to claim on join, how long to wait after joining, whether to
+  claim a kit as soon as its cooldown expires, and how long to wait between claims.
+- **Chat Commands → prefixes / intercept-chat / allowed-destructive / allow-all-destructive** — the
+  chat prefixes, whether the line is cancelled before the server sees it, and which destructive
+  commands are allowed.
+- **Automation Brain → react-to-elytra / react-to-inventory-full / react-to-low-health /
+  react-to-players** — which reactions are enabled.
+
+## Automation engine and tasks
+
+Everything long-running the addon does — a withdrawal, a restock, a journey — is a **task** on one
+priority queue, not an inline loop. This is what makes the automation safe to combine: tasks run one
+at a time in priority order, a task is deduplicated by name and category, a task that fails but still
+has attempts left is re-queued, and every task ends in a definite state (completed, partly completed,
+failed with a reason, or cancelled) rather than being forgotten.
+
+Priorities run from critical survival down to background discovery. A task describes its work; the
+engine builds the runner lazily from a per-category factory and holds the control leases the work
+needs, so two tasks can never click the same slot or steer the same flight.
+
+The **Automation Brain** is how the modules talk to each other without calling each other. It watches
+a small set of facts — health, hunger, elytra durability, free slots, totems, nearby players, queue
+depth — and a rule fires on a *rising edge* only, subject to a cooldown, so a condition that stays
+true does not spam an action. Built-in reactions replace a failing elytra, pause exploration when the
+inventory fills or health drops, and note player sightings. Everything a reaction does goes through
+the engine or an existing module's public method, never a private shortcut.
+
+Watch it with `/bh automation reactions`, `/bh tasks`, or the **Automation** section of the
+management screen.
+
+## Chat commands
+
+Enable `chat-commands` and type a prefixed line in Minecraft chat — `!help`, `.bh tasks`, `!kits`.
+Only a line the local player typed is ever executed: a message received from another player is data
+and is never parsed, and the addon's own output is ignored. Destructive commands (movement, control)
+are refused unless you list them under `allowed-destructive` or turn on `allow-all-destructive`.
+
+The same commands are reachable from `/bh chat run <line>` and from `/bh` directly.
+
+## Kits
+
+Enable `kit-bot` and define your kits in `kit-lines` as `name:command:cooldown` (for example
+`travel:/kit travel:3600`). `/bh kit list` shows each kit and its remaining cooldown; `/bh kit claim
+<name>` claims one, `/bh kit all` claims every ready kit. A server-side cooldown reply is adopted, so
+the client stops trying instead of spamming a claim the server will reject.
 
 ## Storage and inventory
 
@@ -223,8 +291,8 @@ than pretending it worked.
 
 ## Persistence
 
-Six stores persist per server address under Meteor's config folder: stashes, players, ender chests,
-exploration (visited chunks + route waypoints), the storage registry and storage workflows. Each is
+Seven stores persist per server address under Meteor's config folder: stashes, players, ender chests,
+exploration (visited chunks + route waypoints), the storage registry, storage workflows and kits. Each is
 versioned and reads its records tolerantly, so a single corrupted record is skipped rather than losing
 the whole database — the skipped count is reported by `/bh database status`. `/bh database export`
 writes every store to one file; import applies each section it finds and never wipes a store whose
@@ -232,14 +300,14 @@ section is missing.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md). The current release is **2.0.0** — the storage release.
+See [CHANGELOG.md](CHANGELOG.md). The current release is **2.1.0** — the automation release.
 
 ## Building from source
 
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.0.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.1.0.jar
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```

@@ -71,6 +71,26 @@ public record AutomationEvent(Type type, String source, long timestamp, Map<Stri
         WORKFLOW_COMPLETED,
         WORKFLOW_FAILED,
 
+        // Tasks and automation engine
+        TASK_QUEUED,
+        TASK_STARTED,
+        TASK_COMPLETED,
+        TASK_PARTIAL,
+        TASK_FAILED,
+        TASK_CANCELLED,
+        NAVIGATION_STARTED,
+        NAVIGATION_ARRIVED,
+        NAVIGATION_FAILED,
+
+        // Chat and kits
+        CHAT_COMMAND,
+        CHAT_COMMAND_DENIED,
+        KIT_CLAIM_ATTEMPTED,
+        KIT_CLAIM_SUCCEEDED,
+        KIT_CLAIM_FAILED,
+        KIT_ON_COOLDOWN,
+        KIT_AVAILABLE,
+
         // System
         SYSTEM_ERROR,
         MILESTONE
