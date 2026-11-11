@@ -5,6 +5,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.basehunt.bhclient.core.AutomationEvent;
 import dev.basehunt.bhclient.core.AutomationManager;
 import dev.basehunt.bhclient.core.task.Task;
+import dev.basehunt.bhclient.core.terminal.TerminalBuffer;
 import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.gui.BaseHuntingScreen;
 import dev.basehunt.bhclient.modules.BaseHunter;
@@ -12,6 +13,7 @@ import dev.basehunt.bhclient.modules.AutoStorage;
 import dev.basehunt.bhclient.modules.AutomationBrain;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.ChatCommands;
+import dev.basehunt.bhclient.modules.CommandTerminal;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -951,6 +953,40 @@ public class BaseHuntCommand extends Command {
     }
 
     private void buildTerminal(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("terminal")
+            .executes(context -> {
+                BaseHuntingScreen.open(GuiThemes.get());
+                info("Opened the Base Hunting screen; the Terminal section is at the bottom.");
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("run")
+                .then(argument("line", StringArgumentType.greedyString()).executes(context -> {
+                    CommandTerminal terminal = Modules.get().get(CommandTerminal.class);
+                    if (terminal == null) {
+                        error("The command terminal module is not loaded.");
+                        return SINGLE_SUCCESS;
+                    }
+                    String line = StringArgumentType.getString(context, "line");
+                    String result = terminal.execute(line);
+                    // Mirror the terminal output into chat so a command run from /bh is not silent.
+                    for (TerminalBuffer.Line entry : terminal.buffer().tail(12)) {
+                        info("%s", entry.text());
+                    }
+                    info("Result: %s", result);
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("help").executes(context -> {
+                CommandTerminal terminal = Modules.get().get(CommandTerminal.class);
+                if (terminal == null) {
+                    error("The command terminal module is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                for (String line : terminal.registry().help()) info("%s", line);
+                return SINGLE_SUCCESS;
+            }))
+        );
+
         builder.then(literal("chat")
             .executes(context -> {
                 ChatCommands commands = Modules.get().get(ChatCommands.class);

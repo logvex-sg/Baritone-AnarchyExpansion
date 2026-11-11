@@ -133,6 +133,11 @@ public class ChatCommands extends Module {
         return registry;
     }
 
+    /** The configured chat prefixes, for the terminal's {@code chat prefixes} output. */
+    public List<String> prefixes() {
+        return prefixes.get();
+    }
+
     @EventHandler
     private void onSendMessage(SendMessageEvent event) {
         if (mc.player == null) return;

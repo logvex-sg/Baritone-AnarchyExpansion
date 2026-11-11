@@ -114,6 +114,9 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh withdraw <item> [amount]` / `deposit <item> [amount]` | Exact-quantity transfer, as a queued task |
 | `/bh kit status` / `list` / `claim <name>` / `all` | Server kit status and claiming |
 | `/bh chat run <line>` | Run a chat command line as if you had typed it |
+| `/bh terminal` | Open the management screen, whose Terminal section is at the bottom |
+| `/bh terminal run <line>` | Run one terminal command and echo its output to chat |
+| `/bh terminal help` | List every terminal command |
 
 ## Webhook setup
 
@@ -162,6 +165,7 @@ All under the **Base Hunting** category in Meteor's module list.
 | `chat-commands` | off | Runs addon commands typed in chat behind a prefix |
 | `kit-bot` | off | Claims server kits and tracks their cooldowns |
 | `auto-storage` | off | Exact-quantity withdrawals, deposits and restocks as tasks |
+| `command-terminal` | off | In-game command terminal over every manager, with Tab completion and history |
 
 There is also a **Base Hunting** HUD element with individual toggles for server, position, dimension,
 flight state, new-chunk/stash/player counts, autopilot target and distance, elytra durability, mending
@@ -255,6 +259,38 @@ are refused unless you list them under `allowed-destructive` or turn on `allow-a
 
 The same commands are reachable from `/bh chat run <line>` and from `/bh` directly.
 
+## Terminal
+
+Enable `command-terminal` and open `/bh gui`; the Terminal section sits at the bottom of the screen.
+It is a real command line over the same managers the GUI and `/bh` use, so nothing it can do is a
+special case. Type a line and press Enter, press Tab to complete a command, subcommand or argument,
+and press Up/Down to walk the history.
+
+The command set is grouped:
+
+```
+help [command]          status                    modules [list|search|enable|disable]
+tasks [list|stop|clear] storage [list|search|withdraw|deposit|register|goto|restock]
+navigate <x> <y> <z>    baritone [status|stop]    kit [list|status|claim <name>]
+elytra [status|replace] echest [status|open|organise|goto]   player [list|search <q>]
+stash [list|nearby|search <q>]   route [list|add|clear|start|stop]
+explore [grid|spiral|adaptive|heading|custom|stop|status]
+chat [status|prefixes|commands|run <line>]   config [list|get|set]
+database [status|export|import]   history [clear]   macro [list|run <name>]   clear   gui
+```
+
+Shortcuts are configurable in the module's `aliases` setting (`s=status`, `w=withdraw`, …). Each
+command declares its own permission level, and a subcommand can be stricter than its parent — so
+`storage list` is read-only while `storage withdraw` is not. Commands that change things ask for a
+second Enter before they run. The terminal only ever sees input you type; chat messages from other
+players never reach it. `/bh terminal run <line>` runs one command from chat and echoes the output.
+
+Macros are named command sequences, written in the module's `macros` setting as
+`name = step ; step ; step` (for example `preflight = elytra status ; storage restock ; survival
+status`). `macro list` shows them and `macro run <name>` replays one; every step goes through the same
+registry, so permissions and confirmation still apply and a macro can never do more than typing the
+steps by hand.
+
 ## Kits
 
 Enable `kit-bot` and define your kits in `kit-lines` as `name:command:cooldown` (for example
@@ -306,7 +342,7 @@ process or the saved file without limit.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md). The current release is **2.3.0** — the stability-hardening release.
+See [CHANGELOG.md](CHANGELOG.md). The current release is **2.4.0** — the command-terminal release.
 
 ## Building from source
 
@@ -332,6 +368,8 @@ src/main/java/dev/basehunt/bhclient/
 ├── core/                        shared runtime coordination
 │   ├── AutomationManager / AutomationBus / AutomationEvent
 │   ├── TaskScheduler / Priority / ControlResource / Lease
+│   ├── chat/                     chat prefix commands (parsed from local chat only)
+│   ├── terminal/                 in-game command terminal (parser, registry, history, aliases)
 │   └── logic/                   pure, headlessly testable decision logic
 │       ├── DeploymentGovernor   bounded deploy/recover policy (FlightController)
 │       ├── BoundedLongSet       size-capped packed-chunk-key set
@@ -347,6 +385,7 @@ src/test/java/dev/basehunt/bhclient/
 ├── PlannerTest.java             FlightPlanner maths, no display needed
 ├── CoreLogicTest.java           pure-logic suite (elytra, scoring, scheduler, bus, recovery)
 ├── HardeningTest.java           regressions for the stability fixes (bounds, dedupe, DB coverage)
+├── TerminalLogicTest.java       terminal parser, history, aliases, registry, permissions, completion
 └── ApiContractTest.java         asserts the Meteor/Minecraft members the addon drives still exist
 ```
 

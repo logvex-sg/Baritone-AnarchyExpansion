@@ -15,7 +15,7 @@ JDK 21 required. The Gradle wrapper is the only entry point.
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs seven plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs eight plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
@@ -35,6 +35,9 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 - `hardeningTest` — regressions for the stability fixes: `BoundedLongSet` size cap and oldest-first
   eviction (including the eviction callback and a million-insert run), `Embed.fingerprint` dedupe
   coverage, and `DatabaseIO.sectionKeys()` coverage of every persisted store. 21 assertions, pure.
+- `terminalLogicTest` — the command-terminal suite: the quote- and backslash-aware line parser, the
+  history cursor and draft restore, the shortcut table, registry dispatch/aliases, per-subcommand
+  permission levels, the confirmation gate, tab completion and the macro store. 86 assertions, pure.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
@@ -108,13 +111,20 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              Condition (parses "<fact> <op> <number>", inert when malformed),
 │   │                              Rule (edge-triggered + cooldown), RuleSet
 │   ├── chat/                      ChatRouter (parses only LOCAL_PLAYER lines), ChatPermissions
+│   ├── terminal/                  in-game command terminal (pure): CommandLine (quote/escape-aware
+│   │                              tokeniser), CommandRegistry (dispatch, aliases, per-subcommand
+│   │                              permission + confirmation, completion, help), TerminalCommand
+│   │                              (metadata + builder), TerminalBuffer (bounded, typed lines),
+│   │                              CommandHistory (cursor + draft), CommandAliases (shortcuts),
+│   │                              MacroStore (named command sequences replayed via the registry)
 │   └── kit/                       Kit, KitRegistry, KitResponses (classify the server's reply)
 ├── modules/                     BaseHunter (v1), BaseHunterV2, NewChunks, StashFinder,
 │                                PlayerLogger, AutoLog, WebhookNotifier, MendingManager,
 │                                EnderChestManager, SurvivalManager,
 │                                InventoryManager, ChestSorter, StorageNetwork, ShulkerManager,
 │                                RestockManager, StorageMonitor,
-│                                AutomationBrain (rule reactions), ChatCommands, KitBot, AutoStorage
+│                                AutomationBrain (rule reactions), ChatCommands, KitBot, AutoStorage,
+│                                CommandTerminal (the terminal runtime: registry ↔ managers)
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
 │                                StorageRegistry, WorkflowManager, KitBotStore (persisted per-server
 │                                state), AutomationEngine (task queue + factories), NavigationManager
@@ -405,6 +415,23 @@ the client believes is on cooldown.
 rather than clicking inline, so it is serialised, interruptible and reports partial/failed honestly.
 Protection is enforced in the operation layer via `ProtectionRules`/`ProtectionGuard`, not trusted from
 the caller, and `ItemFilter` matching is namespace-insensitive (`minecraft:elytra` == `elytra`).
+
+**The command terminal is local-only input and delegates to the managers.** `CommandTerminal` is the
+runtime half: it builds a `CommandRegistry` whose handlers call the *same* public methods the GUI and
+`/bh` call (`AutoStorage.withdraw`, `StorageNetwork.gotoContainer`, `BaseHunterV2.start`, …), so the
+three entry points cannot drift apart. The parser, registry, history and aliases in `core/terminal/`
+are pure and covered by `TerminalLogicTest`. Two rules when adding a terminal command:
+
+- **Register it with a permission level, and give a subcommand its own level when it differs.** The
+  registry checks `levelFor(args)` — the level of the subcommand actually being run — so `storage
+  list` can be `READ_ONLY` while `storage withdraw` is `MOVEMENT`. Mark anything that changes state
+  `.confirm()` so it needs a second Enter; any intervening command disarms it.
+- **Never parse chat text in the terminal.** Its input comes from the GUI text box or `/bh terminal
+  run`; a chat message another player sent is data and must never reach the registry. `chat run` feeds
+  the chat command registry (which keeps its own LOCAL_PLAYER + permission gate), it does not bypass it.
+
+The terminal has no shell, no filesystem and no arbitrary code execution — every command is an addon
+operation.
 
 ## Version pins
 

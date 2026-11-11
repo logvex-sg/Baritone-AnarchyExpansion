@@ -1,7 +1,8 @@
 # Base Hunting Client — full guide
 
 This is the complete manual for the addon: what every module does, how the pieces fit together, how
-to configure them for an anarchy server, and how to read the data it stores.
+to configure them for an anarchy server, and how to read the data it stores. It documents release
+**2.4.0**.
 
 If you only read one section, read [Quick start](#quick-start) and
 [How the automation decides things](#how-the-automation-decides-things).
@@ -23,11 +24,12 @@ If you only read one section, read [Quick start](#quick-start) and
 13. [How the automation decides things](#how-the-automation-decides-things)
 14. [Automation engine, tasks and the brain](#automation-engine-tasks-and-the-brain)
 15. [Chat commands and kits](#chat-commands-and-kits)
-16. [Discord webhooks](#discord-webhooks)
-17. [Commands](#commands)
-18. [Data, persistence and backups](#data-persistence-and-backups)
-19. [Troubleshooting](#troubleshooting)
-20. [Building from source](#building-from-source)
+16. [The command terminal](#the-command-terminal)
+17. [Discord webhooks](#discord-webhooks)
+18. [Commands](#commands)
+19. [Data, persistence and backups](#data-persistence-and-backups)
+20. [Troubleshooting](#troubleshooting)
+21. [Building from source](#building-from-source)
 
 ## What this is
 
@@ -99,6 +101,7 @@ All modules live under the **Base Hunting** category in Meteor's module list.
 | `chat-commands` | off | Runs addon commands typed in chat behind a configurable prefix. |
 | `kit-bot` | off | Claims server kits and tracks their cooldowns per server. |
 | `auto-storage` | off | Exact-quantity withdrawals, deposits and restocks as queued tasks. |
+| `command-terminal` | off | In-game command terminal over every manager, with Tab completion, history and macros. |
 
 ## Automatic elytra management
 
@@ -388,6 +391,8 @@ depth and kit status (`show-automation`).
 - **Notifications** — webhook status; send-test.
 - **Database** — record counts, integrity report (including any records skipped on load) and
   export/import/copy.
+- **Terminal** — the in-game command line: scrollable output, an input box with Tab completion and
+  history, and Help / Status / Clear / Settings buttons.
 
 Every button calls the same public method the corresponding command does, so the GUI and the command
 line can never drift apart.
@@ -512,6 +517,58 @@ a kit as soon as its cooldown elapses. `/bh kit list` shows each kit and its rem
 kit claim <name>` claims one and `/bh kit all` claims every ready kit. Kit state is persisted by
 `KitBotStore`, so cooldowns survive a restart.
 
+## The command terminal
+
+The terminal is a command line over the whole addon, built into the management screen. Enable
+`command-terminal` and open `/bh gui`; the **Terminal** section is at the bottom. It is not a second
+implementation of anything: every command calls the same manager method the GUI button and the `/bh`
+command call, so the three entry points can never disagree about what an action does.
+
+Type a line and press Enter. **Tab** completes the command name, then its subcommands, then any
+registered argument values; **Up/Down** walk the history, and Up from the newest line restores
+whatever you had half-typed. Output scrolls in a bounded buffer (the oldest lines fall off), and the
+Help / Status / Clear / Settings buttons drive it without typing. `/bh terminal run <line>` runs one
+command from chat and echoes the output, and `/bh terminal help` lists every command.
+
+### Safety
+
+The terminal's input comes from a text box you type into — never from a chat message — so unlike the
+chat prefix system it can offer the commands that change state. Three rules still apply:
+
+- **Every command declares a permission level**, and a subcommand can be stricter than its parent.
+  `storage list` is read-only; `storage withdraw` is not. The registry checks the level of the
+  subcommand actually being run, not the parent's.
+- **Anything that changes state asks for confirmation.** A destructive command prints what it is about
+  to do and needs a second Enter. Any other command you run in between disarms it, so a stray repeat
+  cannot fire by accident.
+- **A macro is only ever as powerful as its steps.** Macros replay through the same registry, so
+  permissions and confirmation still apply to every step, and nesting is capped.
+
+The terminal has no shell, no filesystem access and no arbitrary code execution. It can only do what
+the addon can already do.
+
+### Shortcuts and macros
+
+`aliases` (in the module's settings) maps a short name to a command: `s=status`, `w=withdraw`. Lookup
+is case-insensitive and happens before parsing, so `s` runs `status`.
+
+`macros` names a sequence of commands as `name = step ; step ; step`. The default defines
+`preflight = elytra status ; storage restock ; survival status`. `macro list` shows them and
+`macro run <name>` replays one.
+
+### Command reference
+
+```
+help [command]          status                    modules [list|search|enable|disable]
+tasks [list|stop|clear] storage [list|search|withdraw|deposit|register|goto|restock]
+navigate <x> <y> <z>    baritone [status|stop]    kit [list|status|claim <name>]
+elytra [status|replace] echest [status|open|organise|goto]   player [list|search <q>]
+stash [list|nearby|search <q>]   route [list|add|clear|start|stop]
+explore [grid|spiral|adaptive|heading|custom|stop|status]
+chat [status|prefixes|commands|run <line>]   config [list|get|set]
+database [status|export|import]   history [clear]   macro [list|run <name>]   clear   gui
+```
+
 ## Discord webhooks
 
 Enable `webhook-notifier` and paste a Discord webhook URL into `webhook-url` (there is one per module
@@ -632,6 +689,9 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh kit all` | Claim every ready kit |
 | `/bh chat` | List the chat commands |
 | `/bh chat run <line>` | Run a chat command line as if you had typed it |
+| `/bh terminal` | Open the management screen, whose Terminal section is at the bottom |
+| `/bh terminal run <line>` | Run one terminal command and echo its output to chat |
+| `/bh terminal help` | List every terminal command |
 
 ## Data, persistence and backups
 
@@ -706,12 +766,14 @@ Requires JDK 21.
 ```
 
 `verifyAddon` is the fast pre-flight check and is wired into `check`, so `./gradlew build` runs it too.
-It runs seven headless suites: `plannerTest` (flight-planner maths), `coreLogicTest` (elytra,
+It runs eight headless suites: `plannerTest` (flight-planner maths), `coreLogicTest` (elytra,
 deployment — including the bounded-retry `DeploymentGovernor` regression — mending, inventory, stash
 scoring, chunk dedup, target ranking, persistence recovery, scheduler and event bus), `storageLogicTest`,
 `automationLogicTest`, `hardeningTest` (bounded collections, embed dedupe, database coverage),
-`apiContractTest` (asserts the Meteor/Minecraft members the addon drives still exist) and
-`baritoneContractTest` (asserts the Baritone members the addon drives still exist).
+`terminalLogicTest` (the terminal parser, history, shortcuts, registry dispatch/permissions/
+confirmation/completion and macros), `apiContractTest` (asserts the Meteor/Minecraft members the addon
+drives still exist) and `baritoneContractTest` (asserts the Baritone members the addon drives still
+exist).
 
 See `AGENTS.md` for the architecture and the development constraints, including how to run the client
 headlessly.

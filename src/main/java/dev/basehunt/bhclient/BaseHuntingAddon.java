@@ -10,6 +10,7 @@ import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.AutoStorage;
 import dev.basehunt.bhclient.modules.AutomationBrain;
 import dev.basehunt.bhclient.modules.ChatCommands;
+import dev.basehunt.bhclient.modules.CommandTerminal;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -82,6 +83,7 @@ public class BaseHuntingAddon extends MeteorAddon {
         Modules.get().add(new StorageMonitor());
         Modules.get().add(new KitBot());
         Modules.get().add(new ChatCommands());
+        Modules.get().add(new CommandTerminal());
         Modules.get().add(new AutoStorage());
         Modules.get().add(new AutomationBrain());
 

@@ -3,6 +3,48 @@
 All notable changes to the Base Hunting Client. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] — 2026-11-11
+
+The command-terminal release. It adds an in-game command terminal: a real command line over the same
+managers the GUI and `/bh` use, with argument parsing, Tab completion, history, configurable
+shortcuts, per-command permissions and a confirmation step for anything that changes state. The
+terminal is local-only — its input comes from a text box you type into, never from a chat message
+another player sent — so it can offer the destructive commands the chat prefix system refuses by
+default. `./gradlew build` is green (36 + 147 + 30 + 196 + 21 + 21 + 131 + 86 headless assertions).
+
+### Added — the command terminal
+
+- **`command-terminal` module.** Enable it and open `/bh gui`; the Terminal section is at the bottom.
+  Output scrolls in a bounded buffer, input is a text box that runs a command on Enter, and the
+  Help/Status/Clear/Settings buttons drive it without typing. `/bh terminal run <line>` runs one
+  command from chat and echoes the output; `/bh terminal help` lists every command.
+- **Nineteen command groups** cover the whole addon: `status`, `modules`, `tasks`, `storage`,
+  `navigate`, `baritone`, `kit`, `elytra`, `echest`, `player`, `stash`, `route`, `explore`, `chat`,
+  `config`, `database`, `history`, `clear` and `gui`. Each handler calls the same public method the GUI
+  and `/bh` use, so the three entry points cannot drift apart.
+- **Per-subcommand permissions.** A command declares its own level and each subcommand may be
+  stricter, so `storage list` is read-only while `storage withdraw` is not — the registry checks the
+  level of the subcommand actually being run, not the parent's.
+- **Confirmation gate.** A command marked destructive asks for a second Enter before it runs; any
+  intervening command disarms it, so a stray repeat cannot fire by accident.
+- **Tab completion** for command names, subcommands and registered argument candidates, routed into
+  Meteor's own completion popup through a text-box renderer. **History** with an Up/Down cursor that
+  restores the line you were typing, consecutive-duplicate collapsing and a size cap.
+- **Configurable shortcuts** (`aliases` setting, `s=status`, `w=withdraw`, …), applied before parsing
+  and looked up case-insensitively. **Macros** (`macros` setting) name a sequence of commands
+  (`name = step ; step`) that `macro run` replays through the same registry, so permissions and
+  confirmation still apply to every step.
+
+### Added — pure terminal core, headlessly tested
+
+- `core/terminal/`: `CommandLine` (quote- and backslash-aware tokeniser, prefix stripping),
+  `CommandRegistry` (dispatch, aliases, per-subcommand permission and confirmation, completion, help),
+  `TerminalCommand` (metadata + builder), `TerminalBuffer` (bounded, typed lines),
+  `CommandHistory` (cursor + draft), `CommandAliases` (shortcuts), `MacroStore` (named sequences).
+- `TerminalLogicTest` — 86 assertions over the parser, history cursor, shortcut table, registry
+  dispatch/aliases/permissions/confirmation/completion, the macro store and buffer bounds. Wired into
+  `verifyAddon`.
+
 ## [2.3.0] — 2026-11-11
 
 The stability-hardening release. Every change here is a bug that was found by reading the code: an
