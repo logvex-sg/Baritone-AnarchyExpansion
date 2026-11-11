@@ -230,6 +230,10 @@ the whole database — the skipped count is reported by `/bh database status`. `
 writes every store to one file; import applies each section it finds and never wipes a store whose
 section is missing.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). The current release is **2.0.0** — the storage release.
+
 ## Building from source
 
 Requires JDK 21.
