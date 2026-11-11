@@ -15,7 +15,7 @@ JDK 21 required. The Gradle wrapper is the only entry point.
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs six plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs seven plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
@@ -23,15 +23,18 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 - `coreLogicTest` — the pure-logic suite: elytra durability, the deployment state machine, flight-state
   classification, mending priorities, item classification, inventory planning, stash scoring, chunk
   deduplication, persistence record recovery, target prioritisation, retry backoff (including the
-  bounded-deployment loop), the exploration planner, survival thresholds, the scheduler and the event
-  bus. 184 assertions, no Minecraft classes, so it catches arithmetic and state-machine regressions
-  that would otherwise only appear mid-flight.
+  bounded-deployment loop and the `DeploymentGovernor` regression), the exploration planner, survival
+  thresholds, the scheduler and the event bus. 196 assertions, no Minecraft classes, so it catches
+  arithmetic and state-machine regressions that would otherwise only appear mid-flight.
 - `storageLogicTest` — the storage suite: item classification, container layout, sort planning,
   simulated sort correctness, protection rules, deposit/withdraw/pull transfers, item routing, restock
   needs, shulker contents, operation state, workflows and category parsing. 131 assertions, again pure.
 - `automationLogicTest` — the automation suite: the task lifecycle, queue ordering, retry and cancel,
   exact-quantity planning and simulation, item matching, protection, the chat router and permissions,
   the kit registry and response classifier, and the rule engine. 147 assertions, pure.
+- `hardeningTest` — regressions for the stability fixes: `BoundedLongSet` size cap and oldest-first
+  eviction (including the eviction callback and a million-insert run), `Embed.fingerprint` dedupe
+  coverage, and `DatabaseIO.sectionKeys()` coverage of every persisted store. 21 assertions, pure.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
@@ -90,6 +93,8 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              ElytraDurability, ElytraDeployment, FlightState, MendingPriorities,
 │   │                              ItemCategory, InventoryPlan, StashScorer, StashClassification,
 │   │                              ExploredRegions, ExplorationPlanner, TargetPlanner, RetryPolicy,
+│   │                              DeploymentGovernor (bounded deploy/recover policy for
+│   │                              FlightController), BoundedLongSet (size-capped chunk-key set),
 │   │                              SurvivalStatus, RecordCodec (tolerant NBT list decoding),
 │   │                              StorageCategory, ItemClassifier, ContainerLayout, SortPlanner,
 │   │                              InventorySimulator, TransferPlanner, RestockPlanner, ShulkerInventory,
@@ -191,7 +196,9 @@ data is discarded on startup.
 **Webhook sending is async and rate limited.** `WebhookManager` is a singleton with one daemon
 thread draining a bounded queue. Never send from the tick loop synchronously. It dedupes messages
 within a 3s window — the dedupe key includes the embed body via `Embed.fingerprint()`, so if you add
-a new field to `Embed`, add it to `fingerprint()` too or distinct alerts will collapse into one.
+a new field to `Embed`, add it to `fingerprint()` too or distinct alerts will collapse into one. The
+key is only recorded once the message is accepted into the queue: a message dropped on a full queue
+rolls its key back so the retry is not suppressed as a "duplicate".
 
 **Mentions ride as message content.** Discord embeds cannot carry a mention, so `WebhookSettings.send`
 passes `prefix()` as `content` alongside the embed. Preserve that when adding new send paths.
@@ -241,7 +248,10 @@ select, and a preview of every planned move is logged before the first click.
 **Database export/import replaces, it does not merge.** `DatabaseIO` writes every store into one NBT
 tag; importing applies each section it finds and leaves stores whose section is missing untouched, so
 an older or partial export cannot wipe data it does not describe. Each store is applied inside its own
-try/catch, so one malformed section cannot abort the whole import.
+try/catch, so one malformed section cannot abort the whole import. `DatabaseIO.sectionKeys()` is the
+single source of truth for which stores are covered; a headless test pins it against the registered
+stores, so a newly added store that is left out of export/import fails the build instead of silently
+missing from every backup.
 
 **Saved state** uses `StashManager`, `PlayerTracker`, `EnderChestStore` and `ExplorationStore` with NBT
 serialisation, keyed per server address. All four are registered with `Systems.add(...)` *before*
@@ -262,6 +272,42 @@ hand-rolled loop, and bump the store's `DB_VERSION` when its record shape change
 the exception, logs it, and republishes a `SYSTEM_ERROR` event so the failure is visible without taking
 the client down. A `reportingFailure` guard stops that from recursing if a `SYSTEM_ERROR` listener itself
 throws, and the bus never reports a failure of a `SYSTEM_ERROR` event.
+
+### Flight deployment policy (do not reintroduce the infinite retry)
+
+`FlightController` (used by `BaseHunterV2`) delegates all retry bookkeeping to the pure
+`DeploymentGovernor` in `core/logic`. The rule it enforces, and which a regression test in
+`coreLogicTest.deploymentGovernor` pins, is: **re-asserting "I want to fly" must not reset the launch
+budget.** `BaseHunterV2` calls `setWantsFlight(true)` on every tick while a route is active, so if that
+call reset the retry policy the budget would refill 20 times a second and a takeoff that can never
+succeed would be retried forever (this was a real bug; the same shape was fixed for v1 in 2.2.0).
+
+- `setWantsFlight(true)` only resets on a genuine `false -> true` transition.
+- A glide that actually begins (`FlightState.GLIDING`) replenishes the budget, so a launch that used
+  most of its attempts once does not leave the next interruption with almost none.
+- When the budget is spent the controller reports `FLIGHT_DEPLOY_FAILED` exactly once (via
+  `shouldReportDeployFailure()`) and stops trying, rather than spamming chat every tick.
+- `onDimensionChanged()` / `onDisconnected()` / `beginLeg()` start a fresh budget.
+
+Anything that changes the deploy/recover policy belongs in `DeploymentGovernor`, not in
+`FlightController`, so it stays testable without a Minecraft client.
+
+### Bounded collections (long sessions must not leak)
+
+Chunk scanners run for hours and can touch hundreds of thousands of chunks. Every collection that grows
+with world size is capped:
+
+- `NewChunks` keeps `newChunks` / `oldChunks` in a `BoundedLongSet` (200k cap, oldest-first eviction).
+  The `foundAt` timestamp map is pruned by the set's eviction callback, so an evicted key never leaves a
+  stale timestamp; do not prune it separately.
+- `StashFinder.lastScanned` is size-capped the same way and pruned on the rescan window.
+- `PlayerTracker` caps per-server entries and total sightings; `ExploredRegions` caps the visited-chunk
+  set.
+
+When you add a collection keyed by chunk position, player or stash, give it a cap and an eviction rule,
+and assert the bound in `hardeningTest`. `BoundedLongSet` is the shared, tested building block: it is
+synchronized (chunk scans run off the client thread) and takes an optional `LongConsumer` eviction
+callback for keeping a parallel map in step.
 
 ### Storage subsystem
 

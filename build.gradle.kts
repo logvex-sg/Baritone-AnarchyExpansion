@@ -95,7 +95,15 @@ tasks.register<JavaExec>("baritoneContractTest") {
 tasks.register("verifyAddon") {
     group = "verification"
     description = "Runs the headless planner, logic, storage, automation and API contract tests."
-    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "automationLogicTest", "apiContractTest", "baritoneContractTest")
+    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "automationLogicTest", "hardeningTest", "apiContractTest", "baritoneContractTest")
+}
+
+tasks.register<JavaExec>("hardeningTest") {
+    group = "verification"
+    description = "Runs the regression tests for the stability fixes (bounded collections, embed dedupe, database coverage)."
+    dependsOn("testClasses")
+    classpath = sourceSets.test.get().runtimeClasspath + sourceSets.test.get().output
+    mainClass.set("dev.basehunt.bhclient.HardeningTest")
 }
 
 tasks.register<JavaExec>("automationLogicTest") {

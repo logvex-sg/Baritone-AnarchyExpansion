@@ -79,10 +79,10 @@ public final class AutomationEngine {
         return task;
     }
 
-    /** Creates and submits a task in one step. */
+    /** Creates and submits a task in one step. The queue assigns the id from its single counter. */
     public Task submit(String name, String description, Task.Category category,
                        dev.basehunt.bhclient.core.Priority priority) {
-        Task task = new Task(nextId(), name, description, category, priority);
+        Task task = new Task(0, name, description, category, priority);
         return submit(task);
     }
 
@@ -221,12 +221,6 @@ public final class AutomationEngine {
             data.put("requested", String.valueOf(task.requested()));
         }
         manager.publish(AutomationEvent.of(type, task.name(), data));
-    }
-
-    private long nextId = 1;
-
-    private long nextId() {
-        return nextId++;
     }
 
     /** A one-line summary for the HUD and terminal. */

@@ -79,6 +79,8 @@ public class WebhookManager {
 
         Payload payload = new Payload(url, GSON.toJson(body));
         if (!queue.offer(payload)) {
+            // The message never made it into the queue, so it must not suppress a retry as a "duplicate".
+            recentMessages.remove(key, now);
             BaseHuntingAddon.LOG.warn("Webhook queue is full, dropping message.");
             return false;
         }
@@ -218,12 +220,18 @@ public class WebhookManager {
             return field(name, value, true);
         }
 
-        /** Stable identity used for duplicate suppression; covers every field that reaches Discord. */
-        private String fingerprint() {
+        /**
+         * Stable identity used for duplicate suppression. Covers every field that reaches Discord, so two
+         * alerts that differ in any visible way (including their footer or thumbnail) are never collapsed
+         * into one. Exposed so the dedupe contract can be asserted headlessly.
+         */
+        public String fingerprint() {
             StringBuilder builder = new StringBuilder();
             builder.append(title).append('\u0001')
                 .append(description).append('\u0001')
-                .append(color).append('\u0001');
+                .append(color).append('\u0001')
+                .append(footer).append('\u0001')
+                .append(thumbnailUrl).append('\u0001');
 
             for (Field field : fields) {
                 builder.append(field.name()).append('=').append(field.value()).append('\u0001');

@@ -203,6 +203,14 @@ public class StashFinder extends Module {
     );
 
     private final List<StashManager.Stash> renderStashes = new ArrayList<>();
+
+    /**
+     * Chunk key to the last time it was scanned, used to avoid re-scanning chunks the client re-sends while
+     * flying. Bounded so a long session cannot grow it without limit: entries older than the rescan window are
+     * useless anyway, so a size cap only ever evicts data that would be stale by the time it is read again.
+     */
+    private static final long RESCAN_WINDOW_MS = 60_000L;
+    private static final int MAX_SCANNED_CHUNKS = 100_000;
     private final Map<Long, Long> lastScanned = new HashMap<>();
 
     private int scansThisSecond;
@@ -232,10 +240,24 @@ public class StashFinder extends Module {
         long key = pos.toLong();
         long now = java.lang.System.currentTimeMillis();
         Long previous = lastScanned.get(key);
-        if (previous != null && now - previous < 60_000L) return;
-        lastScanned.put(key, now);
+        if (previous != null && now - previous < RESCAN_WINDOW_MS) return;
 
+        rememberScan(key, now);
         scan(chunk, pos);
+    }
+
+    /**
+     * Records a scan time, pruning entries that have aged out of the rescan window and enforcing a hard size
+     * cap. Pruning on write keeps the map bounded without a background timer, and an aged-out entry would be
+     * treated as unscanned anyway, so dropping it changes nothing but memory use.
+     */
+    private void rememberScan(long key, long now) {
+        if (lastScanned.size() >= MAX_SCANNED_CHUNKS) {
+            lastScanned.entrySet().removeIf(e -> now - e.getValue() >= RESCAN_WINDOW_MS);
+            if (lastScanned.size() >= MAX_SCANNED_CHUNKS) lastScanned.clear();
+        }
+
+        lastScanned.put(key, now);
     }
 
     private void scan(WorldChunk chunk, ChunkPos pos) {

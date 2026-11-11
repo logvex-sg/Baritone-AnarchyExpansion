@@ -257,10 +257,21 @@ public class NewChunks extends Module {
         .build()
     );
 
-    private final Set<Long> newChunks = ConcurrentHashMap.newKeySet();
-    private final Set<Long> oldChunks = ConcurrentHashMap.newKeySet();
-    private final Set<Long> pendingScan = ConcurrentHashMap.newKeySet();
+    /**
+     * Hard cap on tracked chunks per category. A long session can load hundreds of thousands of chunks, and
+     * with the default "keep forever" cleanup these sets would otherwise grow without bound. Oldest entries
+     * are evicted first, matching {@link dev.basehunt.bhclient.core.logic.ExploredRegions}.
+     */
+    private static final int MAX_TRACKED_CHUNKS = 200_000;
+
+    // The "found at" map is kept in step with newChunks by the eviction callback, so an evicted key never
+    // leaves a stale timestamp behind.
     private final Map<Long, Long> foundAt = new ConcurrentHashMap<>();
+    private final dev.basehunt.bhclient.core.logic.BoundedLongSet newChunks =
+        new dev.basehunt.bhclient.core.logic.BoundedLongSet(MAX_TRACKED_CHUNKS, foundAt::remove);
+    private final dev.basehunt.bhclient.core.logic.BoundedLongSet oldChunks =
+        new dev.basehunt.bhclient.core.logic.BoundedLongSet(MAX_TRACKED_CHUNKS);
+    private final Set<Long> pendingScan = ConcurrentHashMap.newKeySet();
 
     private final List<Long> notifyQueue = new ArrayList<>();
     private long lastNotifyTime;
@@ -275,6 +286,7 @@ public class NewChunks extends Module {
         newChunks.clear();
         oldChunks.clear();
         pendingScan.clear();
+        foundAt.clear();
         notifyQueue.clear();
         lastNotifyTime = java.lang.System.currentTimeMillis();
         lastCleanup = lastNotifyTime;
@@ -351,16 +363,26 @@ public class NewChunks extends Module {
         }
 
         if (provenOld) {
-            oldChunks.add(key);
+            trackOld(key);
             if (chatFeedback.get()) info("Old chunk at (highlight)%d, %d (default)- %s", pos.getCenterX(), pos.getCenterZ(), reasons.toString().trim());
             return;
         }
 
         if (signals < required) return;
 
+        trackNew(key);
+        onNewChunkFound(pos, reasons.toString().trim());
+    }
+
+    /** Adds a newly-generated chunk and evicts the oldest once the cap is reached. */
+    private void trackNew(long key) {
         newChunks.add(key);
         foundAt.put(key, java.lang.System.currentTimeMillis());
-        onNewChunkFound(pos, reasons.toString().trim());
+    }
+
+    /** Adds an already-generated chunk and evicts the oldest once the cap is reached. */
+    private void trackOld(long key) {
+        oldChunks.add(key);
     }
 
     private boolean hasFlowingLiquid(WorldChunk chunk) {
@@ -455,7 +477,7 @@ public class NewChunks extends Module {
      * longs. Read by BaseHunterV2 to aim its sweep at fresh terrain instead of flying blind.
      */
     public java.util.Set<Long> getNewChunks() {
-        return java.util.Collections.unmodifiableSet(newChunks);
+        return java.util.Collections.unmodifiableSet(newChunks.snapshot());
     }
 
     /** When a tracked chunk was first seen, in epoch millis. Empty when the chunk is not tracked. */
@@ -474,12 +496,10 @@ public class NewChunks extends Module {
         if (clearAfterMinutes.get() > 0 && now - lastCleanup > 30_000L) {
             lastCleanup = now;
             long cutoff = now - clearAfterMinutes.get() * 60_000L;
-            newChunks.removeIf(key -> {
+            for (long key : newChunks.snapshot()) {
                 Long found = foundAt.get(key);
-                if (found == null || found > cutoff) return false;
-                foundAt.remove(key);
-                return true;
-            });
+                if (found != null && found <= cutoff) newChunks.remove(key);
+            }
         }
 
         if (!webhook.isEnabled() || notifyPerChunk.get() || notifyQueue.isEmpty()) return;
@@ -530,13 +550,13 @@ public class NewChunks extends Module {
         int y = renderY.get();
         int maxDistanceSq = renderDistance.get() * renderDistance.get();
 
-        for (long key : newChunks) {
+        for (long key : newChunks.snapshot()) {
             if (!shouldRender(key, maxDistanceSq)) continue;
             renderChunk(event, key, y, newChunkColor.get());
         }
 
         if (renderOldChunks.get()) {
-            for (long key : oldChunks) {
+            for (long key : oldChunks.snapshot()) {
                 if (!shouldRender(key, maxDistanceSq)) continue;
                 renderChunk(event, key, y, oldChunkColor.get());
             }
