@@ -12,6 +12,8 @@ import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.PlayerTracker;
 import dev.basehunt.bhclient.systems.StashManager;
 import dev.basehunt.bhclient.utils.ServerUtils;
+import dev.basehunt.bhclient.modules.KitBot;
+import dev.basehunt.bhclient.systems.AutomationEngine;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.Setting;
@@ -154,6 +156,13 @@ public class BaseHuntingHud extends HudElement {
     private final Setting<Boolean> showV2Target = sgGeneral.add(new BoolSetting.Builder()
         .name("show-v2-target")
         .description("Show the base hunter v2 target and distance.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showAutomation = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-automation")
+        .description("Show the active and queued automation tasks, and the kit status.")
         .defaultValue(true)
         .build()
     );
@@ -311,6 +320,20 @@ public class BaseHuntingHud extends HudElement {
 
         if (showShulkers.get() && mc.player != null) {
             lines.add("Shulkers: " + dev.basehunt.bhclient.systems.ShulkerManager.status());
+        }
+
+        if (showAutomation.get()) {
+            AutomationEngine engine = AutomationEngine.get();
+            if (engine != null) {
+                var active = engine.queue().active();
+                lines.add("Task: " + (active == null ? "idle" : active.describe()));
+                if (engine.queue().queueSize() > 0) {
+                    lines.add("Task queue: %d".formatted(engine.queue().queueSize()));
+                }
+            }
+
+            KitBot kits = Modules.get().get(KitBot.class);
+            if (kits != null && kits.isActive()) lines.add("Kits: " + kits.statusLine());
         }
 
         return lines;

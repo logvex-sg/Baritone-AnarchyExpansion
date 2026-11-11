@@ -9,13 +9,13 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.0.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.1.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + Meteor API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs four plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs five plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
@@ -28,6 +28,9 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 - `storageLogicTest` — the storage suite: item classification, container layout, sort planning,
   simulated sort correctness, protection rules, deposit/withdraw/pull transfers, item routing, restock
   needs, shulker contents, operation state, workflows and category parsing. 131 assertions, again pure.
+- `automationLogicTest` — the automation suite: the task lifecycle, queue ordering, retry and cancel,
+  exact-quantity planning and simulation, item matching, protection, the chat router and permissions,
+  the kit registry and response classifier, and the rule engine. 147 assertions, pure.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 
@@ -79,24 +82,37 @@ src/main/java/dev/basehunt/bhclient/
 │   ├── TaskScheduler.java         priority arbiter, one owner per ControlResource
 │   ├── Priority.java, ControlResource.java, Lease.java
 │   ├── ClientThread.java          runs work on the Minecraft client thread
-│   └── logic/                     pure, headlessly testable decision logic:
-│                                  ElytraDurability, ElytraDeployment, FlightState, MendingPriorities,
-│                                  ItemCategory, InventoryPlan, StashScorer, StashClassification,
-│                                  ExploredRegions, ExplorationPlanner, TargetPlanner, RetryPolicy,
-│                                  SurvivalStatus, RecordCodec (tolerant NBT list decoding),
-│                                  StorageCategory, ItemClassifier, ContainerLayout, SortPlanner,
-│                                  InventorySimulator, TransferPlanner, RestockPlanner, ShulkerInventory,
-│                                  ProtectionRules, ItemRoutingEngine, OperationState, WorkflowEngine
+│   ├── logic/                     pure, headlessly testable decision logic:
+│   │                              ElytraDurability, ElytraDeployment, FlightState, MendingPriorities,
+│   │                              ItemCategory, InventoryPlan, StashScorer, StashClassification,
+│   │                              ExploredRegions, ExplorationPlanner, TargetPlanner, RetryPolicy,
+│   │                              SurvivalStatus, RecordCodec (tolerant NBT list decoding),
+│   │                              StorageCategory, ItemClassifier, ContainerLayout, SortPlanner,
+│   │                              InventorySimulator, TransferPlanner, RestockPlanner, ShulkerInventory,
+│   │                              ProtectionRules, ItemRoutingEngine, OperationState, WorkflowEngine,
+│   │                              ItemFilter, QuantityPlanner, ProtectionGuard
+│   ├── task/                      the automation work queue:
+│   │                              Task (name/category/priority/progress/attempts/state),
+│   │                              TaskQueue (one runner at a time, dedupe, retry, cancel),
+│   │                              TaskState, TaskRunner
+│   ├── rule/                      declarative reactions:
+│   │                              Condition (parses "<fact> <op> <number>", inert when malformed),
+│   │                              Rule (edge-triggered + cooldown), RuleSet
+│   ├── chat/                      ChatRouter (parses only LOCAL_PLAYER lines), ChatPermissions
+│   └── kit/                       Kit, KitRegistry, KitResponses (classify the server's reply)
 ├── modules/                     BaseHunter (v1), BaseHunterV2, NewChunks, StashFinder,
 │                                PlayerLogger, AutoLog, WebhookNotifier, MendingManager,
 │                                EnderChestManager, SurvivalManager,
 │                                InventoryManager, ChestSorter, StorageNetwork, ShulkerManager,
-│                                RestockManager, StorageMonitor
+│                                RestockManager, StorageMonitor,
+│                                AutomationBrain (rule reactions), ChatCommands, KitBot, AutoStorage
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
-│                                StorageRegistry, WorkflowManager (persisted per-server state),
-│                                DatabaseIO (export/import), StorageOperations (live container ↔
-│                                pure-planner bridge), ContainerInteractionManager (the one thing
-│                                that clicks slots), RestockManager, ShulkerManager
+│                                StorageRegistry, WorkflowManager, KitBotStore (persisted per-server
+│                                state), AutomationEngine (task queue + factories), NavigationManager
+│                                (single owner of "go to a position"), DatabaseIO (export/import),
+│                                StorageOperations (live container ↔ pure-planner bridge),
+│                                ContainerInteractionManager (the one thing that clicks slots),
+│                                StorageAutomation (task runners for withdraw/deposit), PlayerFacts
 └── utils/                       BaritoneHelper, ElytraController, ElytraManager, FlightController,
                                  EquipmentScanner, FlightPlanner, WebhookManager, ServerUtils,
                                  WebhookSettings, ContainerHelper, CategoryParser
@@ -104,7 +120,7 @@ src/main/java/dev/basehunt/bhclient/
 
 ### Control and event flow
 
-Modules never call each other directly. There are exactly two coupling paths:
+Modules never call each other directly. There are exactly three coupling paths:
 
 1. **Events** — `AutomationManager.bus()` carries `AutomationEvent`s. A module publishes what happened
    (a stash was found, an elytra was replaced, the inventory is full) and any module that cares
@@ -116,8 +132,19 @@ Modules never call each other directly. There are exactly two coupling paths:
    controls. `AutomationManager.tryAcquire` is the entry point; a module that is refused must back off
    for that tick rather than acting anyway. Leases carry a short timeout so a module that stops ticking
    releases control on its own.
+3. **Tasks** — anything longer than a tick is a `Task` on the `AutomationEngine`, not an inline loop.
+   The engine runs one task at a time in priority order, deduplicates by name+category, re-queues a
+   failed-but-retryable task, and reports every transition on the bus. The runner is built lazily from
+   a per-`Task.Category` factory (`engine.registerFactory(...)`), so the queue holds descriptions, not
+   live objects. GUI, `/bh` commands and `ChatCommands` all submit through the engine, so there is one
+   queue and one owner of the work.
 
-The two persistent gotchas: `AutomationManager` is **not** a Meteor `System` or `Module`, so
+`AutomationBrain` is the reactive layer: it evaluates `Rule`s over `PlayerFacts` each tick and on
+subscribed events. A rule fires on a rising edge only, subject to a cooldown, so a condition that stays
+true does not spam an action. Rules call a module's public method or submit a task — never a private
+shortcut.
+
+The persistent gotchas: `AutomationManager` is **not** a Meteor `System` or `Module`, so
 `install()` must subscribe it to `MeteorClient.EVENT_BUS` itself or its tick handler never runs and
 timed leases never expire; and `AutomationBus` logs through its own `LogUtils` logger rather than
 `BaseHuntingAddon.LOG`, because referencing the addon class from the bus pulls in `Category` →
@@ -229,10 +256,13 @@ with a reason, never a silent success. `OperationState` drives this (opened → 
 done/failed). This is why the planners are pure: the same `InventorySimulator` is the spec and the
 checker.
 
-**A move is three clicks: source, destination, source.** That is a swap for two full stacks and a
-top-up for two stacks of the same item — the only two patterns the planners emit. Clicking an empty
-source at the end is a harmless no-op. Do not emit moves that need a different click pattern without
-extending `executeMove`.
+**A whole-stack move is three clicks: source, destination, source.** That is a swap for two full stacks
+and a top-up for two stacks of the same item. Clicking an empty source at the end is a harmless no-op.
+A **partial** move (`SortPlanner.Kind.TRANSFER`) is the exact-quantity case: pick up the whole source
+stack, place exactly N one at a time, then put the remainder back. `InventorySimulator` models that
+click-for-click, so a partial transfer is verified like any other move, and `SortPlanner.Move.clickCost`
+reports the click budget. Do not emit moves that need a different click pattern without extending
+`executeMove` and the simulator together.
 
 **Planners are pure and live in `core/logic`.** `StorageCategory` (category order + presets),
 `ItemClassifier` (item id → category), `SortPlanner` (inventory ordering with group merging),
@@ -265,6 +295,44 @@ failure is visible in chat, the GUI and Discord.
 **Navigation reuses Baritone and degrades without it.** `StorageNetwork` and `RestockManager` walk with
 `BaritoneHelper` when it is available and refuse with a clear message when it is not; they never
 reference `baritone.*` types directly.
+
+### Automation engine, rules, chat and kits
+
+**One queue owns long-running work: `AutomationEngine` + `TaskQueue`.** A `Task` carries a name,
+`Task.Category`, `Priority`, an optional requested/attained quantity, an attempt budget and a state.
+The engine runs **one task at a time**, deduplicates a submission by name+category, re-queues a
+failed-but-retryable task, and reports every transition on the bus (`TASK_*`). `Task.fail` is guarded
+against a terminal state, so a late state write cannot resurrect a finished task. A task's runner is
+built lazily from a per-category factory registered in `BaseHuntingAddon.onInitialize`
+(`engine.registerFactory(Task.Category.WITHDRAW, ...)`); if you add a category, register its factory
+there or the task will be submitted and immediately fail with "no runner".
+
+**`AutomationEngine` is not a Module.** Like `AutomationManager` and `ContainerInteractionManager`,
+`install()` subscribes it to `MeteorClient.EVENT_BUS` itself and it must be installed last in
+`onInitialize`, after `NavigationManager`, so its subscriptions are in place before any module can
+submit a task.
+
+**Rules are edge-triggered.** `RuleSet.evaluateTick` fires a rule only on a false→true edge of its
+`Condition`, subject to the rule's cooldown; a condition that stays true through the cooldown fires
+once the cooldown expires rather than losing the edge. `Condition.parse` returns an *inert* condition
+for a malformed expression (a bad rule does nothing, it never throws). Facts come from
+`PlayerFacts.snapshot()`; add a fact there rather than reaching into `mc` from a rule action.
+
+**The chat router only ever parses locally typed lines.** `ChatRouter.parse` returns null unless the
+origin is `Origin.LOCAL_PLAYER`; a message received from another player is data and is never executed.
+`ChatPermissions` refuses any command above `READ_ONLY` unless it is listed in `allowed-destructive`
+or `allow-all-destructive` is on. Keep that gate when adding a chat command: register the command with
+its permission level, and do not execute a destructive action from a lower level.
+
+**Kit cooldowns are per server and are a client-side memory only.** The server owns the real cooldown.
+`KitBotStore` persists the last-claim time per server through `RecordCodec` (a malformed kit is skipped,
+never fatal), and `KitBot` adopts a server-reported cooldown rather than ignoring it. Never send a claim
+the client believes is on cooldown.
+
+**Exact-quantity transfers are tasks, not loops.** `AutoStorage` submits a `StorageAutomation` task
+rather than clicking inline, so it is serialised, interruptible and reports partial/failed honestly.
+Protection is enforced in the operation layer via `ProtectionRules`/`ProtectionGuard`, not trusted from
+the caller, and `ItemFilter` matching is namespace-insensitive (`minecraft:elytra` == `elytra`).
 
 ## Version pins
 

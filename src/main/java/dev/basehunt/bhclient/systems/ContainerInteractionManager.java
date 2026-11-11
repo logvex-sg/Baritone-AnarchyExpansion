@@ -8,7 +8,6 @@ import dev.basehunt.bhclient.core.logic.InventorySimulator;
 import dev.basehunt.bhclient.core.logic.OperationState;
 import dev.basehunt.bhclient.core.logic.SortPlanner;
 import dev.basehunt.bhclient.utils.ServerUtils;
-import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.SlotUtils;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.item.ItemStack;
@@ -282,13 +281,56 @@ public class ContainerInteractionManager {
             return;
         }
 
+        if (move.kind() == SortPlanner.Kind.TRANSFER) {
+            executeTransfer(handler, from, to, move.amount());
+            return;
+        }
+
         // Pick up the source, drop it on the destination, then put whatever is left back where it came from.
         // This is a swap for two full stacks and a top-up for two stacks of the same item; both are the two
         // patterns the planner emits, and clicking an empty source at the end is a harmless no-op.
-        InvUtils.click().slotId(from);
-        InvUtils.click().slotId(to);
-        InvUtils.click().slotId(from);
+        pickUp(handler, from);
+        pickUp(handler, to);
+        pickUp(handler, from);
         state.clickSent();
+    }
+
+    /**
+     * Moves exactly {@code amount} items: pick the source stack up, right-click {@code amount} items into the
+     * destination one at a time, then put the remainder back. Right-click places a single item, which is the
+     * only vanilla way to split a stack, and every intermediate click is counted so the operation budget and
+     * the settle check account for it.
+     */
+    private void executeTransfer(ScreenHandler handler, int from, int to, int amount) {
+        int count = Math.min(Math.max(0, amount), handler.getSlot(from).getStack().getCount());
+        if (count <= 0) {
+            state.clickRejected("nothing to move");
+            return;
+        }
+
+        pickUp(handler, from);
+        for (int i = 0; i < count; i++) {
+            placeOne(handler, to);
+            state.clickSent();
+        }
+        pickUp(handler, from);
+        state.clickSent();
+    }
+
+    /** A left-click on a slot: pick up a whole stack, or place the whole cursor stack. */
+    private void pickUp(ScreenHandler handler, int slotId) {
+        var mc = ServerUtils.mc();
+        if (mc == null || mc.player == null) return;
+        mc.interactionManager.clickSlot(handler.syncId, slotId, 0, net.minecraft.screen.slot.SlotActionType.PICKUP,
+            mc.player);
+    }
+
+    /** A right-click on a slot: place a single item from the cursor. */
+    private void placeOne(ScreenHandler handler, int slotId) {
+        var mc = ServerUtils.mc();
+        if (mc == null || mc.player == null) return;
+        mc.interactionManager.clickSlot(handler.syncId, slotId, 1, net.minecraft.screen.slot.SlotActionType.PICKUP,
+            mc.player);
     }
 
     private void finish() {

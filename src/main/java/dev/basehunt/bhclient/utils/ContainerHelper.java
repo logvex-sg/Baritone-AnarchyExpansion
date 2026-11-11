@@ -58,6 +58,13 @@ public final class ContainerHelper {
         return containerType(state.getBlock());
     }
 
+    /** True when the chunk containing a position is currently loaded on the client. */
+    public static boolean isChunkLoaded(BlockPos pos) {
+        var mc = ServerUtils.mc();
+        if (mc == null || mc.world == null) return false;
+        return mc.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4);
+    }
+
     /**
      * True when a container at {@code pos} can actually be opened right now: the chunk is loaded, the block is
      * a container, and it is within reach. A registered container that fails this is skipped by routing rather
@@ -66,10 +73,17 @@ public final class ContainerHelper {
     public static boolean isReachable(BlockPos pos) {
         var mc = ServerUtils.mc();
         if (mc == null || mc.player == null || mc.world == null) return false;
-        if (!mc.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) return false;
+        if (!isChunkLoaded(pos)) return false;
         if (containerTypeAt(pos) == null) return false;
 
         return mc.player.getEyePos().distanceTo(Vec3d.ofCenter(pos)) <= REACH;
+    }
+
+    /** True when the player is close enough to a block to interact with it, chunk loaded or not. */
+    public static boolean withinReach(BlockPos pos, double distance) {
+        var mc = ServerUtils.mc();
+        if (mc == null || mc.player == null) return false;
+        return mc.player.getEyePos().distanceTo(Vec3d.ofCenter(pos)) <= distance;
     }
 
     /**

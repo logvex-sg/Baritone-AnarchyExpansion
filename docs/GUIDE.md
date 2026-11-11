@@ -21,11 +21,13 @@ If you only read one section, read [Quick start](#quick-start) and
 11. [Player tracking](#player-tracking)
 12. [HUD and the management screen](#hud-and-the-management-screen)
 13. [How the automation decides things](#how-the-automation-decides-things)
-14. [Discord webhooks](#discord-webhooks)
-15. [Commands](#commands)
-16. [Data, persistence and backups](#data-persistence-and-backups)
-17. [Troubleshooting](#troubleshooting)
-18. [Building from source](#building-from-source)
+14. [Automation engine, tasks and the brain](#automation-engine-tasks-and-the-brain)
+15. [Chat commands and kits](#chat-commands-and-kits)
+16. [Discord webhooks](#discord-webhooks)
+17. [Commands](#commands)
+18. [Data, persistence and backups](#data-persistence-and-backups)
+19. [Troubleshooting](#troubleshooting)
+20. [Building from source](#building-from-source)
 
 ## What this is
 
@@ -50,7 +52,7 @@ and a set of automatic managers (elytra, mending, ender chest, survival).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add Baritone for Meteor. Only Base Hunter v1 needs it; everything else works without it.
-4. Drop `basehunting-2.0.0.jar` into `mods`.
+4. Drop `basehunting-2.1.0.jar` into `mods`.
 5. Launch the game and look for the **Base Hunting** category in Meteor's module list.
 
 Baritone is declared as a `recommends`, not a `depends`, so the addon loads whether or not it is
@@ -91,6 +93,10 @@ All modules live under the **Base Hunting** category in Meteor's module list.
 | `shulker-manager` | off | Fills, empties, sorts and searches shulker boxes. |
 | `restock-manager` | off | Tops up travel supplies from your registered storage. |
 | `storage-monitor` | off | Runs storage workflows and is the storage status view. |
+| `automation-brain` | off | Reacts to events and player facts and queues automation tasks. |
+| `chat-commands` | off | Runs addon commands typed in chat behind a configurable prefix. |
+| `kit-bot` | off | Claims server kits and tracks their cooldowns per server. |
+| `auto-storage` | off | Exact-quantity withdrawals, deposits and restocks as queued tasks. |
 
 ## Automatic elytra management
 
@@ -357,13 +363,16 @@ The **Base Hunting** HUD element shows, with individual toggles for each line: s
 dimension, flight state, new-chunk count, stash count, player count, v1 destination and distance, v2
 mode/target/distance/queue, elytra status and spare count, mending status, firework count, free
 inventory slots, survival warning, explored/review chunk counts, current control ownership, storage
-status (`show-storage`) and carried shulker counts (`show-shulkers`).
+status (`show-storage`), carried shulker counts (`show-shulkers`) and the active automation task, queue
+depth and kit status (`show-automation`).
 
 ### Management screen
 
 `/bh gui` opens the management screen. It has functional controls in these sections:
 
 - **Status** — server, position, elytra, survival; Start / Pause / Resume / Stop.
+- **Automation** — engine status, brain / auto-storage / kit toggles, the active and queued task
+  counts, and buttons to Claim Kits, Cancel Tasks and list recent reactions.
 - **Exploration** — explored and review counts; sweep-pattern buttons; reset explored.
 - **Route** — waypoint count; add-here, fly-route, clear-route.
 - **Recent activity** — the last few automation events, so you can see what the system just did.
@@ -409,6 +418,98 @@ A module that is refused a lease must back off for the tick rather than acting a
 short timeout, so a module that stops ticking (disabled, disconnected) releases control on its own
 instead of leaving the resource stuck.
 
+**Tasks.** Anything that takes more than a tick is not run inline; it is submitted to the
+`AutomationEngine` as a `Task`. See the next section.
+
+## Automation engine, tasks and the brain
+
+### Tasks
+
+Every long-running action — an exact-quantity withdrawal, a restock, a journey — is a **`Task`** on one
+priority queue (`TaskQueue`), owned by the `AutomationEngine`. A task carries a name, a category, a
+priority, an optional requested/attained quantity, an attempt budget and a state. The engine runs one
+task at a time, in priority order, and reports each transition on the event bus (`TASK_QUEUED`,
+`TASK_STARTED`, `TASK_COMPLETED`, `TASK_PARTIAL`, `TASK_FAILED`, `TASK_CANCELLED`).
+
+Why it matters:
+
+- **Serialised.** Two tasks can never drive the player at once, and a task holds the control leases its
+  work needs.
+- **Deduplicated.** Submitting a task whose name and category match one already active or queued is
+  refused, so a repeated command cannot stack duplicate work.
+- **Recoverable.** A task that fails but still has attempts left is re-queued rather than dropped. A
+  task that runs out of attempts stays failed with a reason.
+- **Definite.** A task ends completed, partly completed (with the shortfall), failed (with a reason) or
+  cancelled — never silently forgotten. A terminal task cannot be resurrected by a late state write.
+- **Described by data.** The engine builds a task's runner lazily from a per-category factory
+  (`Task.Category` → `Supplier<TaskRunner>`), so the queue holds descriptions, not live objects.
+
+The engine is also the single place the GUI, the commands and the chat router submit work, so all three
+entry points share one queue.
+
+### The brain
+
+`automation-brain` is how the modules react to each other without calling each other. It watches a
+small set of **facts** from `PlayerFacts` — `health`, `max_health`, `hunger`, `absorption`, `air`,
+`xp_level`, `on_ground`, `falling`, `gliding`, `in_water`, `elytra_durability`, `elytra_durability_pct`,
+`spare_elytra`, `free_slots`, `inventory_used_pct`, `totems`, `nearby_players`,
+`nearest_player_distance`, `task_queue` — and evaluates a set of `Rule`s against them each tick, plus
+on subscribed events.
+
+A rule fires on a **rising edge** only: it must be false, then true, to fire. That, plus a per-rule
+cooldown, is what stops a condition that stays true from spamming an action. A rule that is still true
+when its cooldown expires fires then, rather than losing the edge. Each rule's action either calls an
+existing module's public method (pause exploration, replace the elytra) or submits a task; it never
+takes a private shortcut into another module's internals.
+
+The built-in reactions are:
+
+- **replace-elytra** — when `elytra_durability` is critically low, ask `ElytraManager` for a swap.
+- **inventory-full** — when `free_slots < 1`, pause exploration and report it.
+- **low-health** — when `health < 8`, stop exploration and report it.
+- **player-nearby** — note a `PLAYER_SIGHTED` event.
+- **inventory-freed** — observe `TASK_COMPLETED` so a pause can be lifted.
+
+See the reactions with `/bh automation reactions`, and the queue with `/bh tasks`.
+
+## Chat commands and kits
+
+### Chat commands
+
+`chat-commands` lets you run addon commands straight from Minecraft chat. The prefix list defaults to
+`!` and `.bh`, so `!help`, `.bh tasks` and `!kits` all work.
+
+The safety property is *where the line came from*. `ChatRouter` only ever parses a line whose origin is
+`LOCAL_PLAYER` — a message received from another player is data and is never executed, and the addon's
+own output is ignored. On top of that, `ChatPermissions` refuses any command above `READ_ONLY` unless
+you have allowed it: a destructive command (one that moves the player or changes control) needs its
+name in `allowed-destructive`, or `allow-all-destructive` on. That is what stops a mistyped `!withdraw
+all` from emptying a chest by accident.
+
+`intercept-chat` (default on) cancels the message before the server sees it, so the server never
+receives the prefixed line. Turn it off if the server has its own commands behind the same prefix and
+you want the line to go through as well.
+
+The available chat commands are `help`, `status`, `whoami`, `tasks`, `elytra`, `kits`, `stash`,
+`storage`, `withdraw`, `deposit`, `kit-claim` and `cancel`. The same commands are reachable from
+`/bh chat run <line>`.
+
+### Kits
+
+`kit-bot` claims server kits for you. Define each kit in `kits` as `name:command:cooldown` — for
+example `travel:/kit travel:3600`. A missing command defaults to `/kit <name>`, and a missing cooldown
+defaults to an hour.
+
+The server owns the real cooldown; the client only remembers what it last saw, so a restart does not
+make it spam a claim the server will reject. A cooldown is tracked per server, because two servers
+rarely share a kit layout. When the server replies that a kit is on cooldown, `KitBot` adopts that
+cooldown rather than ignoring it.
+
+`claim-on-join` claims every ready kit shortly after you join (`join-delay`); `recheck-cooldown` claims
+a kit as soon as its cooldown elapses. `/bh kit list` shows each kit and its remaining cooldown, `/bh
+kit claim <name>` claims one and `/bh kit all` claims every ready kit. Kit state is persisted by
+`KitBotStore`, so cooldowns survive a restart.
+
 ## Discord webhooks
 
 Enable `webhook-notifier` and paste a Discord webhook URL into `webhook-url` (there is one per module
@@ -417,13 +518,14 @@ that can notify). Test it with `/bh webhook test`.
 Notifications are available for: new stash discoveries, major storage discoveries, interesting
 structures, new player sightings, exploration milestones, elytra replacement, mending status,
 equipment problems, route completion, route interruption, ender chest operations, emergency
-conditions and system errors. Coordinates, dimension, timestamps and confidence scores are included
-where relevant.
+conditions, system errors, **queued/finished automation tasks**, **kit claims** and **chat
+commands**. Coordinates, dimension, timestamps and confidence scores are included where relevant.
 
-Each category has its own on/off switch in the `Automation` settings group, and there is a per-type
-cooldown (`event-cooldown-seconds`) so a flapping condition cannot flood the channel. Sending is
-asynchronous on a single daemon thread with a bounded queue, and duplicate messages are collapsed
-within a short window.
+Each category has its own on/off switch in the `Automation` settings group — including `notify-tasks`
+and `notify-chat-commands` for the automation events — and there is a per-type cooldown
+(`event-cooldown-seconds`) so a flapping condition cannot flood the channel. Sending is asynchronous on
+a single daemon thread with a bounded queue, and duplicate messages are collapsed within a short
+window.
 
 Per-module webhook options: `webhook-enabled`, `webhook-url`, `webhook-username`,
 `mention-everyone`, `mention-role-id`, `only-on-servers` / `server-whitelist`.
@@ -512,10 +614,26 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh database copy` / `paste` | Export/import through the clipboard |
 | `/bh webhook test` | Send a test message to the configured webhook |
 
+### Automation, tasks, kits and chat
+
+| Command | What it does |
+| --- | --- |
+| `/bh automation` / `automation status` | Automation engine and brain status |
+| `/bh automation start` / `stop` | Enable / disable the automation brain |
+| `/bh automation reactions` | The most recent rule reactions |
+| `/bh tasks` / `tasks status` | The active and queued automation tasks |
+| `/bh withdraw <item> [amount]` | Withdraw an exact quantity as a queued task |
+| `/bh deposit <item> [amount]` | Deposit an exact quantity as a queued task |
+| `/bh kit status` / `list` | Kits and their remaining cooldowns |
+| `/bh kit claim <name>` | Claim one kit |
+| `/bh kit all` | Claim every ready kit |
+| `/bh chat` | List the chat commands |
+| `/bh chat run <line>` | Run a chat command line as if you had typed it |
+
 ## Data, persistence and backups
 
 State is stored per server address, so travelling between anarchy servers never mixes coordinates up.
-Six stores persist to NBT under Meteor's config folder:
+Seven stores persist to NBT under Meteor's config folder:
 
 | Store | File | Contents |
 | --- | --- | --- |
@@ -525,8 +643,9 @@ Six stores persist to NBT under Meteor's config folder:
 | `ExplorationStore` | `base-hunting-exploration.nbt` | Visited chunks and route waypoints |
 | `StorageRegistry` | `base-hunting-storage.nbt` | Registered containers and their last contents |
 | `WorkflowManager` | `base-hunting-workflows.nbt` | Custom storage workflow definitions |
+| `KitBotStore` | `base-hunting-kits.nbt` | Kit definitions and their last-claim cooldowns |
 
-All six are versioned. Each store reads its records tolerantly: **a single corrupted record is
+All seven are versioned. Each store reads its records tolerantly: **a single corrupted record is
 skipped, never fatal** — one bad entry cannot cost you the rest of the database. The number of records
 skipped on the last load is reported by `/bh database status` and in the management screen's Database
 section, and logged at startup. Meteor itself also writes a timestamped `.backup.nbt` if a whole file
@@ -574,7 +693,7 @@ the addon. See the build notes in `AGENTS.md` about Xvfb and software GL.
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.0.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.1.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded

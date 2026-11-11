@@ -201,6 +201,20 @@ public class WebhookNotifier extends Module {
         .build()
     );
 
+    private final Setting<Boolean> notifyTasks = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-tasks")
+        .description("Notify about queued automation tasks and their outcome, and about kit claims.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyChatCommands = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-chat-commands")
+        .description("Notify when a chat command is run, including refused ones.")
+        .defaultValue(false)
+        .build()
+    );
+
     private final Setting<Integer> automationCooldown = sgAutomation.add(new IntSetting.Builder()
         .name("event-cooldown-seconds")
         .description("Minimum gap between two notifications of the same automation event type.")
@@ -317,6 +331,10 @@ public class WebhookNotifier extends Module {
             case STORAGE_SORTED, ITEMS_DEPOSITED, ITEMS_WITHDRAWN, ITEMS_RESTOCKED, CONTAINER_REGISTERED,
                  CONTAINER_OP_FAILED, SHULKER_FILLED, SHULKER_EMPTIED, WORKFLOW_STARTED, WORKFLOW_STEP_DONE,
                  WORKFLOW_COMPLETED, WORKFLOW_FAILED -> notifyStorage.get();
+            case TASK_QUEUED, TASK_STARTED, TASK_COMPLETED, TASK_PARTIAL, TASK_FAILED, TASK_CANCELLED,
+                 KIT_CLAIM_ATTEMPTED, KIT_CLAIM_SUCCEEDED, KIT_CLAIM_FAILED, KIT_ON_COOLDOWN,
+                 KIT_AVAILABLE -> notifyTasks.get();
+            case CHAT_COMMAND, CHAT_COMMAND_DENIED -> notifyChatCommands.get();
             case SYSTEM_ERROR -> notifyErrors.get();
             default -> false;
         };
@@ -381,6 +399,19 @@ public class WebhookNotifier extends Module {
             case WORKFLOW_STEP_DONE -> "Workflow step done";
             case WORKFLOW_COMPLETED -> "Workflow completed";
             case WORKFLOW_FAILED -> "Workflow failed";
+            case TASK_QUEUED -> "Task queued";
+            case TASK_STARTED -> "Task started";
+            case TASK_COMPLETED -> "Task completed";
+            case TASK_PARTIAL -> "Task partly completed";
+            case TASK_FAILED -> "Task failed";
+            case TASK_CANCELLED -> "Task cancelled";
+            case KIT_CLAIM_ATTEMPTED -> "Claiming kit";
+            case KIT_CLAIM_SUCCEEDED -> "Kit claimed";
+            case KIT_CLAIM_FAILED -> "Kit refused";
+            case KIT_ON_COOLDOWN -> "Kit on cooldown";
+            case KIT_AVAILABLE -> "Kit available";
+            case CHAT_COMMAND -> "Chat command";
+            case CHAT_COMMAND_DENIED -> "Chat command refused";
             default -> prettify(type.name());
         };
     }
@@ -398,7 +429,11 @@ public class WebhookNotifier extends Module {
             case STORAGE_SORTED, ITEMS_DEPOSITED, ITEMS_WITHDRAWN, ITEMS_RESTOCKED, SHULKER_FILLED,
                  SHULKER_EMPTIED, WORKFLOW_STARTED, WORKFLOW_STEP_DONE, WORKFLOW_COMPLETED -> 0x00FF88;
             case CONTAINER_REGISTERED -> 0x00C8FF;
-            case CONTAINER_OP_FAILED, WORKFLOW_FAILED -> 0xFF5555;
+            case CONTAINER_OP_FAILED, WORKFLOW_FAILED, TASK_FAILED, KIT_CLAIM_FAILED -> 0xFF5555;
+            case TASK_QUEUED, TASK_STARTED, KIT_CLAIM_ATTEMPTED, KIT_AVAILABLE -> 0x00C8FF;
+            case TASK_COMPLETED, KIT_CLAIM_SUCCEEDED -> 0x00FF88;
+            case TASK_PARTIAL, TASK_CANCELLED, KIT_ON_COOLDOWN, CHAT_COMMAND_DENIED -> 0xFFAA00;
+            case CHAT_COMMAND -> 0xAAAAAA;
             case ELYTRA_BROKEN, HEALTH_CRITICAL, HUNGER_CRITICAL, DANGER_DETECTED, FLIGHT_INTERRUPTED,
                  LANDED_UNEXPECTEDLY, FLIGHT_DEPLOY_FAILED, SYSTEM_ERROR -> 0xFF5555;
             default -> 0xAAAAAA;
@@ -430,6 +465,16 @@ public class WebhookNotifier extends Module {
             case WORKFLOW_STEP_DONE -> "Workflow '%s' step: %s.".formatted(event.get("workflow"), event.get("step"));
             case WORKFLOW_COMPLETED -> "Workflow '%s' completed.".formatted(event.get("workflow"));
             case WORKFLOW_FAILED -> "Workflow '%s' failed at %s.".formatted(event.get("workflow"), event.get("step"));
+            case TASK_QUEUED -> "Task '%s' queued.".formatted(event.get("task"));
+            case TASK_COMPLETED -> "Task '%s' completed.".formatted(event.get("task"));
+            case TASK_PARTIAL -> "Task '%s' only partly completed.".formatted(event.get("task"));
+            case TASK_FAILED -> "Task '%s' failed: %s.".formatted(event.get("task"), event.get("reason"));
+            case TASK_CANCELLED -> "Task '%s' was cancelled.".formatted(event.get("task"));
+            case KIT_CLAIM_SUCCEEDED -> "Kit '%s' claimed.".formatted(event.get("kit"));
+            case KIT_CLAIM_FAILED -> "Kit '%s' was refused.".formatted(event.get("kit"));
+            case KIT_ON_COOLDOWN -> "Kit '%s' is on cooldown.".formatted(event.get("kit"));
+            case CHAT_COMMAND_DENIED -> "Chat command '%s' was refused.".formatted(event.get("command"));
+            case CHAT_COMMAND -> "Chat command '%s' ran.".formatted(event.get("command"));
             default -> "";
         };
     }

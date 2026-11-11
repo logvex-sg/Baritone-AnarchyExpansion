@@ -1,7 +1,10 @@
 package dev.basehunt.bhclient.systems;
 
 import dev.basehunt.bhclient.core.logic.ItemClassifier;
+import dev.basehunt.bhclient.core.logic.ItemFilter;
+import dev.basehunt.bhclient.core.logic.ProtectionGuard;
 import dev.basehunt.bhclient.core.logic.ProtectionRules;
+import dev.basehunt.bhclient.core.logic.QuantityPlanner;
 import dev.basehunt.bhclient.core.logic.SortPlanner;
 import dev.basehunt.bhclient.core.logic.StorageCategory;
 import dev.basehunt.bhclient.core.logic.TransferPlanner;
@@ -217,5 +220,133 @@ public final class StorageOperations {
 
         StorageRegistry registry = StorageRegistry.get();
         if (registry != null) registry.recordContents(container, observed, emptyContainerSlots(handler).size());
+    }
+
+    // Exact-quantity transfer inputs
+
+    /** The player's occupied stacks as quantity-plan sources. */
+    public static List<QuantityPlanner.Source> playerSources(ScreenHandler handler) {
+        List<QuantityPlanner.Source> sources = new ArrayList<>();
+        for (int id : playerSlotIds(handler)) {
+            ItemStack stack = handler.getSlot(id).getStack();
+            if (stack.isEmpty()) continue;
+            sources.add(new QuantityPlanner.Source(id, ContainerHelper.fullItemId(stack),
+                stack.getName().getString(), ItemClassifier.classify(ContainerHelper.fullItemId(stack)),
+                stack.getCount(), stack.getMaxCount()));
+        }
+        return sources;
+    }
+
+    /** The container's occupied stacks as quantity-plan sources. */
+    public static List<QuantityPlanner.Source> containerSources(ScreenHandler handler) {
+        List<QuantityPlanner.Source> sources = new ArrayList<>();
+        for (int id : containerSlotIds(handler)) {
+            ItemStack stack = handler.getSlot(id).getStack();
+            if (stack.isEmpty()) continue;
+            sources.add(new QuantityPlanner.Source(id, ContainerHelper.fullItemId(stack),
+                stack.getName().getString(), ItemClassifier.classify(ContainerHelper.fullItemId(stack)),
+                stack.getCount(), stack.getMaxCount()));
+        }
+        return sources;
+    }
+
+    /**
+     * The player's slots that can receive an item: empty slots first, then partial stacks of the same item.
+     * Protected player slots are excluded, so a withdrawal can never place items into a protected hotbar slot.
+     */
+    public static List<QuantityPlanner.Destination> playerDestinations(ScreenHandler handler, String itemId,
+                                                                       Set<Integer> protectedPlayerIndices) {
+        List<QuantityPlanner.Destination> empty = new ArrayList<>();
+        List<QuantityPlanner.Destination> partial = new ArrayList<>();
+
+        for (int id : playerSlotIds(handler)) {
+            int index = playerIndex(handler, id);
+            if (protectedPlayerIndices != null && protectedPlayerIndices.contains(index)) continue;
+
+            ItemStack stack = handler.getSlot(id).getStack();
+            if (stack.isEmpty()) {
+                empty.add(new QuantityPlanner.Destination(id, null, 0, 64));
+            } else if (itemId != null && ContainerHelper.fullItemId(stack).equals(itemId)
+                && stack.getCount() < stack.getMaxCount()) {
+                partial.add(new QuantityPlanner.Destination(id, ContainerHelper.fullItemId(stack),
+                    stack.getCount(), stack.getMaxCount()));
+            }
+        }
+
+        // Merge into partial stacks first (fewer slots used), then fill empties.
+        partial.addAll(empty);
+        return partial;
+    }
+
+    /** The container's slots that can receive an item, empty slots first then matching partial stacks. */
+    public static List<QuantityPlanner.Destination> containerDestinations(ScreenHandler handler, String itemId) {
+        List<QuantityPlanner.Destination> empty = new ArrayList<>();
+        List<QuantityPlanner.Destination> partial = new ArrayList<>();
+
+        for (int id : containerSlotIds(handler)) {
+            ItemStack stack = handler.getSlot(id).getStack();
+            if (stack.isEmpty()) {
+                empty.add(new QuantityPlanner.Destination(id, null, 0, 64));
+            } else if (itemId != null && ContainerHelper.fullItemId(stack).equals(itemId)
+                && stack.getCount() < stack.getMaxCount()) {
+                partial.add(new QuantityPlanner.Destination(id, ContainerHelper.fullItemId(stack),
+                    stack.getCount(), stack.getMaxCount()));
+            }
+        }
+
+        partial.addAll(empty);
+        return partial;
+    }
+
+    /** The player-inventory index (0..35) of a handler slot, or -1 when it is a container/armour slot. */
+    public static int playerIndex(ScreenHandler handler, int slotId) {
+        Slot slot = handler.getSlot(slotId);
+        if (slot == null || !isPlayerSlot(slot)) return -1;
+        return slot.getIndex();
+    }
+
+    /** How many of a matching item the player currently carries. */
+    public static int countInPlayer(ScreenHandler handler, ItemFilter filter, Set<String> protectedItems) {
+        int total = 0;
+        for (QuantityPlanner.Source source : playerSources(handler)) {
+            if (protectedItems != null && protectedItems.contains(source.itemId())) continue;
+            if (filter.matches(source.itemId(), source.name(), source.category())) total += source.count();
+        }
+        return total;
+    }
+
+    /** How many of a matching item the open container currently holds. */
+    public static int countInContainer(ScreenHandler handler, ItemFilter filter, Set<String> protectedItems) {
+        int total = 0;
+        for (QuantityPlanner.Source source : containerSources(handler)) {
+            if (protectedItems != null && protectedItems.contains(source.itemId())) continue;
+            if (filter.matches(source.itemId(), source.name(), source.category())) total += source.count();
+        }
+        return total;
+    }
+
+    /**
+     * Refuses any move that touches a protected slot or moves a protected item, returning the moves that are
+     * safe to send. This is where the hotbar protection is enforced: not in a setting, but on the exact moves
+     * that are about to be clicked.
+     */
+    public static List<SortPlanner.Move> enforceProtection(ScreenHandler handler, List<SortPlanner.Move> moves,
+                                                           ProtectionGuard guard, List<String> refusedOut) {
+        List<SortPlanner.Move> allowed = new ArrayList<>(moves.size());
+
+        for (SortPlanner.Move move : moves) {
+            int fromIndex = playerIndex(handler, move.fromSlot());
+            int toIndex = playerIndex(handler, move.toSlot());
+            String item = ContainerHelper.fullItemId(handler.getSlot(move.fromSlot()).getStack());
+
+            String reason = guard.check(fromIndex, toIndex, item);
+            if (reason == null) {
+                allowed.add(move);
+            } else if (refusedOut != null) {
+                refusedOut.add("refused %s: %s".formatted(move.describe(), reason));
+            }
+        }
+
+        return allowed;
     }
 }
