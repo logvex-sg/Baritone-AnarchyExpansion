@@ -1,10 +1,14 @@
 package dev.basehunt.bhclient.utils;
 
+import dev.basehunt.bhclient.core.logic.ElytraDurability;
+import dev.basehunt.bhclient.core.logic.FlightState;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+
+import java.util.Arrays;
 
 /**
  * Keeps an elytra on your back and swaps in a fresh one before the current one fails.
@@ -31,6 +35,12 @@ public final class ElytraManager {
     public static ItemStack equippedElytra() {
         if (ServerUtils.mc().player == null) return ItemStack.EMPTY;
         return ServerUtils.mc().player.getEquippedStack(EquipmentSlot.CHEST);
+    }
+
+    /** The player's Y coordinate, or 0 when there is no player. Used for landing reports. */
+    public static double playerY() {
+        if (ServerUtils.mc().player == null) return 0;
+        return ServerUtils.mc().player.getY();
     }
 
     /** Remaining durability of the worn elytra, or -1 when no elytra is worn. */
@@ -142,6 +152,96 @@ public final class ElytraManager {
         }
 
         return bestSlot;
+    }
+
+    /** Remaining durability of every elytra in the main inventory, in slot order. Used by the durability maths. */
+    public static int[] spareRemainingBySlot() {
+        int[] result = new int[PlayerInventory.MAIN_SIZE];
+        Arrays.fill(result, -1);
+
+        if (ServerUtils.mc().player == null) return result;
+
+        for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {
+            ItemStack stack = ServerUtils.mc().player.getInventory().getStack(slot);
+            if (stack.getItem() != Items.ELYTRA) continue;
+            result[slot] = stack.getMaxDamage() - stack.getDamage();
+        }
+
+        return result;
+    }
+
+    /** True when the worn elytra has at least the given durability remaining. */
+    public static boolean equippedViable(int minimum) {
+        int remaining = equippedRemaining();
+        return ElytraDurability.isViable(remaining, minimum);
+    }
+
+    /** True when a carried elytra has at least the given durability remaining. */
+    public static boolean hasViableSpare(int minimum) {
+        int[] remaining = spareRemainingBySlot();
+        return ElytraDurability.bestSlot(remaining, minimum) >= 0;
+    }
+
+    /** Number of carried elytras at or above the given durability. */
+    public static int viableSpareCount(int minimum) {
+        int[] remaining = spareRemainingBySlot();
+        int count = 0;
+        for (int value : remaining) if (value >= minimum) count++;
+        return count;
+    }
+
+    /**
+     * Swaps in the best spare when the worn elytra has dropped to the threshold, replacing
+     * {@link #replaceIfBelow} for callers that already track durability.
+     *
+     * @return true when a swap happened
+     */
+    public static boolean replaceIfBelow(int threshold, int minimumSpare) {
+        if (threshold <= 0 || !hasElytraEquipped()) return false;
+        if (equippedRemaining() > threshold) return false;
+
+        int slot = ElytraDurability.bestSlot(spareRemainingBySlot(), minimumSpare);
+        if (slot < 0) return false;
+
+        InvUtils.move().from(slot).toArmor(2);
+        return true;
+    }
+
+    /** Classifies the player's physical state for the deployment logic. */
+    public static dev.basehunt.bhclient.core.logic.FlightState flightState() {
+        var player = ServerUtils.mc().player;
+        if (player == null) return FlightState.UNKNOWN;
+
+        return FlightState.classify(
+            player.isGliding(),
+            player.isSwimming(),
+            player.isClimbing(),
+            player.isOnGround(),
+            player.getVelocity().y
+        );
+    }
+
+    /**
+     * Validates equipment before a journey starts.
+     *
+     * @return null when the journey can proceed, otherwise a human-readable reason it cannot
+     */
+    public static String validateJourney(int minimumDurability, int journeyBlocks) {
+        int worn = equippedRemaining();
+        if (worn < 0) {
+            return hasSpare() ? null : "no elytra in the inventory";
+        }
+
+        int[] spares = spareRemainingBySlot();
+        if (worn >= minimumDurability) return null;
+
+        boolean enough = ElytraDurability.canCompleteJourney(
+            worn, spares, journeyBlocks, minimumDurability);
+        if (!enough) {
+            return "not enough elytra durability for a %,d block journey (worn %d)".formatted(journeyBlocks, worn);
+        }
+
+        return null;
     }
 
     /** Short description of the elytra situation, for chat and webhook messages. */

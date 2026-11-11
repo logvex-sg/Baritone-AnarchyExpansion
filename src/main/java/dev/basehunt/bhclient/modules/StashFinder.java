@@ -122,6 +122,13 @@ public class StashFinder extends Module {
         .build()
     );
 
+    private final Setting<Boolean> detectStructures = sgDetection.add(new BoolSetting.Builder()
+        .name("detect-structures")
+        .description("Report chunks containing a beacon or enchantment setup, which mark a real base.")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<Boolean> countBlockEntitiesBelow = sgDetection.add(new BoolSetting.Builder()
         .name("count-all-heights")
         .description("Count containers at any Y level instead of only those above the given height.")
@@ -245,6 +252,8 @@ public class StashFinder extends Module {
         int hoppers = 0;
         int dispensers = 0;
         int spawners = 0;
+        int beaconLike = 0;
+        int suspiciousPatterns = 0;
 
         int lowestY = Integer.MAX_VALUE;
 
@@ -270,6 +279,14 @@ public class StashFinder extends Module {
                 case "mob_spawner", "trial_spawner" -> {
                     if (detectSpawners.get()) spawners++;
                 }
+                // A beacon or an enchantment table is not storage, but it is a strong sign of a working
+                // base rather than a random mineshaft chest, so it is scored as a structural indicator.
+                case "beacon" -> {
+                    if (detectStructures.get()) beaconLike++;
+                }
+                case "enchanting_table", "brewing_stand", "conduit" -> {
+                    if (detectStructures.get()) suspiciousPatterns++;
+                }
                 default -> {
                     // Not a container we care about.
                 }
@@ -281,10 +298,16 @@ public class StashFinder extends Module {
         int total = chests + barrels + shulkers + enderChests + furnaces + hoppers + dispensers;
 
         boolean spawnerHit = detectSpawners.get() && spawners > 0;
-        if (total < minStorageCount.get() && !spawnerHit) return;
+        boolean structureHit = detectStructures.get() && (beaconLike > 0 || suspiciousPatterns >= 2);
 
-        int score = chests * 2 + barrels * 2 + shulkers * 8 + enderChests + furnaces + hoppers + dispensers + spawners * 4;
-        if (score < minScore.get() && !spawnerHit) return;
+        var evidence = new dev.basehunt.bhclient.core.logic.StashScorer.Evidence(
+            chests, 0, barrels, shulkers, enderChests, furnaces, hoppers, dispensers, spawners,
+            beaconLike, suspiciousPatterns);
+
+        int score = dev.basehunt.bhclient.core.logic.StashScorer.score(evidence);
+
+        if (!dev.basehunt.bhclient.core.logic.StashScorer.meetsThreshold(score, total, minScore.get(), minStorageCount.get())
+            && !spawnerHit && !structureHit) return;
 
         int centerX = pos.getCenterX();
         int centerZ = pos.getCenterZ();
@@ -307,6 +330,16 @@ public class StashFinder extends Module {
         stash.hoppers = hoppers;
         stash.dispensers = dispensers;
         stash.spawners = spawners;
+        stash.beaconLike = beaconLike;
+        stash.suspiciousPatterns = suspiciousPatterns;
+        stash.discoveryMethod = "chunk-scan";
+        stash.refreshClassification();
+
+        // A chunk that scores mainly on structure rather than storage is an interesting structure, not a stash.
+        if (structureHit && total < minStorageCount.get()) {
+            stash.classification = dev.basehunt.bhclient.core.logic.StashClassification
+                .INTERESTING_STRUCTURE.describe();
+        }
 
         boolean isNew = true;
         int previousScore = 0;
@@ -317,7 +350,9 @@ public class StashFinder extends Module {
             if (existing != null) {
                 isNew = false;
                 previousScore = existing.score();
-                manager.addOrMerge(stash, mergeRadius.get());
+                existing.merge(stash);
+                manager.save();
+                stash = existing;
             } else {
                 manager.addOrMerge(stash, mergeRadius.get());
             }
@@ -342,25 +377,48 @@ public class StashFinder extends Module {
 
     private void onStashFound(StashManager.Stash stash, boolean isNew) {
         if (chatFeedback.get()) {
-            info("%s stash at (highlight)%d, %d, %d (default)[%s]",
+            info("%s %s at (highlight)%d, %d, %d (default)[%s] score %d",
                 isNew ? "Found" : "Updated",
+                stash.classification,
                 stash.pos.getX(), stash.pos.getY(), stash.pos.getZ(),
-                stash.describeCounts());
+                stash.describeCounts(), stash.score());
         }
 
         refreshRenderList();
+
+        boolean structure = dev.basehunt.bhclient.core.logic.StashClassification.INTERESTING_STRUCTURE
+            .describe().equals(stash.classification);
+
+        dev.basehunt.bhclient.core.AutomationManager manager = dev.basehunt.bhclient.core.AutomationManager.get();
+        if (manager != null) {
+            manager.publish(dev.basehunt.bhclient.core.AutomationEvent.of(
+                structure
+                    ? dev.basehunt.bhclient.core.AutomationEvent.Type.STRUCTURE_FOUND
+                    : isNew ? dev.basehunt.bhclient.core.AutomationEvent.Type.STASH_DISCOVERED
+                      : dev.basehunt.bhclient.core.AutomationEvent.Type.STASH_UPGRADED,
+                name,
+                java.util.Map.of(
+                    "x", String.valueOf(stash.pos.getX()),
+                    "y", String.valueOf(stash.pos.getY()),
+                    "z", String.valueOf(stash.pos.getZ()),
+                    "classification", stash.classification,
+                    "score", String.valueOf(stash.score()),
+                    "dimension", stash.dimension
+                )));
+        }
 
         if (!webhook.isEnabled() || WebhookSettings.globallyMuted()) return;
 
         webhook.send(new WebhookManager.Embed()
             .title(isNew ? "Stash found" : "Stash updated")
-            .color(0xFFD700)
+            .description(stash.classification)
+            .color(isNew ? 0xFFD700 : 0xFFAA00)
             .field("Coordinates", "%d, %d, %d".formatted(stash.pos.getX(), stash.pos.getY(), stash.pos.getZ()))
             .field("Server", stash.server)
             .field("Dimension", stash.dimension)
             .field("Spawn distance", String.valueOf(ServerUtils.spawnDistance(stash.pos.getX(), stash.pos.getZ())))
             .field("Contents", stash.describeCounts(), false)
-            .field("Score", String.valueOf(stash.score()))
+            .field("Confidence", String.valueOf(stash.score()))
             .footer("Base Hunting Client"));
     }
 

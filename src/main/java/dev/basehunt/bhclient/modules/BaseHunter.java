@@ -4,6 +4,7 @@ import baritone.api.Settings;
 import dev.basehunt.bhclient.BaseHuntingAddon;
 import dev.basehunt.bhclient.systems.StashManager;
 import dev.basehunt.bhclient.utils.BaritoneHelper;
+import dev.basehunt.bhclient.utils.ElytraManager;
 import dev.basehunt.bhclient.utils.ServerUtils;
 import dev.basehunt.bhclient.utils.WebhookManager;
 import dev.basehunt.bhclient.utils.WebhookSettings;
@@ -227,6 +228,22 @@ public class BaseHunter extends Module {
         .build()
     );
 
+    private final Setting<Integer> elytraReplaceDurability = sgSafety.add(new IntSetting.Builder()
+        .name("elytra-replace-durability")
+        .description("Swap in a spare elytra when the worn one drops to this much durability. 0 disables.")
+        .defaultValue(30)
+        .min(0)
+        .sliderRange(0, 200)
+        .build()
+    );
+
+    private final Setting<Boolean> abortWithoutElytra = sgSafety.add(new BoolSetting.Builder()
+        .name("abort-without-elytra")
+        .description("Stop the route when no elytra remain at all.")
+        .defaultValue(true)
+        .build()
+    );
+
     // Render
 
     private final Setting<Boolean> render = sgRender.add(new BoolSetting.Builder()
@@ -297,6 +314,7 @@ public class BaseHunter extends Module {
     private long lastResumeAttempt;
     private boolean waitingForBaritone;
     private boolean started;
+    private int elytraSwaps;
 
 
 
@@ -446,6 +464,7 @@ public class BaseHunter extends Module {
         if (!started) return;
 
         handlePlayerSafety();
+        handleElytraEquipment();
 
         if (paused) {
             if (resumeAfterPlayersLeave.get() && !anyPlayerNearby()) {
@@ -483,6 +502,30 @@ public class BaseHunter extends Module {
 
         trackTravel();
         sendProgressIfDue();
+    }
+
+    /**
+     * Keeps an elytra on the player's back and swaps in a spare before the worn one fails.
+     *
+     * <p>Baritone's elytra pathfinder needs an elytra present to take off. Without this the v1 autopilot
+     * silently stalls the first time an elytra breaks mid-flight. Any durability of elytra is accepted, so
+     * a nearly-broken spare still counts.
+     */
+    private void handleElytraEquipment() {
+        if (ElytraManager.hasElytraEquipped()) {
+            if (ElytraManager.replaceIfBelow(elytraReplaceDurability.get())) {
+                elytraSwaps++;
+                if (chatFeedback.get()) info("Swapped in a fresh elytra. %s", ElytraManager.status());
+            }
+            return;
+        }
+
+        if (ElytraManager.equipBest()) {
+            elytraSwaps++;
+            if (chatFeedback.get()) warning("Elytra broke, equipped a spare. %s", ElytraManager.status());
+        } else if (abortWithoutElytra.get()) {
+            stopAndMaybeDisconnect("No elytra left");
+        }
     }
 
     private void handlePlayerSafety() {

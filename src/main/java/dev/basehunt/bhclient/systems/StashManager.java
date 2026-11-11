@@ -21,7 +21,12 @@ import java.util.function.Consumer;
  * rather than duplicated.
  */
 public class StashManager extends System<StashManager> {
+    private static final int DB_VERSION = 1;
+
     private final List<Stash> stashes = new ArrayList<>();
+    /** Records rejected by the last load, so a partly corrupt file can be reported rather than silently lost. */
+    private int lastSkippedRecords;
+    private int lastLoadedVersion = DB_VERSION;
 
     public StashManager() {
         super("base-hunting-stashes");
@@ -96,8 +101,9 @@ public class StashManager extends System<StashManager> {
     @Override
     public NbtCompound toTag() {
         NbtCompound tag = new NbtCompound();
-        NbtList list = new NbtList();
+        tag.putInt("version", DB_VERSION);
 
+        NbtList list = new NbtList();
         for (Stash stash : stashes) list.add(stash.toTag());
         tag.put("stashes", list);
 
@@ -108,15 +114,30 @@ public class StashManager extends System<StashManager> {
     public StashManager fromTag(NbtCompound tag) {
         stashes.clear();
 
-        NbtList list = tag.getListOrEmpty("stashes");
-        for (NbtElement element : list) {
-            if (element instanceof NbtCompound compound) {
-                Stash stash = Stash.fromTag(compound);
-                if (stash != null) stashes.add(stash);
-            }
+        // A single unreadable record is skipped, never fatal: one corrupt entry must not cost the user the
+        // rest of the database. The count is kept so the GUI and the status command can report it.
+        var result = dev.basehunt.bhclient.core.logic.RecordCodec.decodeList(tag, "stashes", Stash::fromTag);
+        stashes.addAll(result.records());
+
+        lastSkippedRecords = result.skipped();
+        lastLoadedVersion = dev.basehunt.bhclient.core.logic.RecordCodec.readVersion(tag, DB_VERSION);
+
+        if (result.anySkipped()) {
+            dev.basehunt.bhclient.BaseHuntingAddon.LOG.warn(
+                "Skipped {} unreadable stash record(s) while loading.", result.skipped());
         }
 
         return this;
+    }
+
+    /** Records rejected by the last load. Zero unless the file was partly corrupt. */
+    public int lastSkippedRecords() {
+        return lastSkippedRecords;
+    }
+
+    /** Format version of the file that was last loaded. */
+    public int lastLoadedVersion() {
+        return lastLoadedVersion;
     }
 
     public enum Kind {
@@ -140,6 +161,15 @@ public class StashManager extends System<StashManager> {
         public int hoppers;
         public int dispensers;
         public int spawners;
+        public int beaconLike;
+        public int suspiciousPatterns;
+
+        /** Confidence bucket from {@link dev.basehunt.bhclient.core.logic.StashClassification}. */
+        public String classification = "unconfirmed";
+        /** How the location was discovered: chunk scan, new chunks, manual entry. */
+        public String discoveryMethod = "scan";
+        /** Weighted confidence score, cached so it survives a restart. */
+        public int confidence;
 
         public long firstSeen;
         public long lastSeen;
@@ -157,8 +187,24 @@ public class StashManager extends System<StashManager> {
             return chests + barrels + shulkers + enderChests + furnaces + hoppers + dispensers;
         }
 
+        /** Weighted confidence score, delegated to the shared scorer so the module and store agree. */
         public int score() {
-            return chests * 2 + barrels * 2 + shulkers * 8 + enderChests + furnaces + hoppers + dispensers + spawners * 4;
+            return dev.basehunt.bhclient.core.logic.StashScorer.score(evidence());
+        }
+
+        /** Builds the scorer's evidence view of this stash. */
+        public dev.basehunt.bhclient.core.logic.StashScorer.Evidence evidence() {
+            return new dev.basehunt.bhclient.core.logic.StashScorer.Evidence(
+                chests, 0, barrels, shulkers, enderChests, furnaces, hoppers, dispensers, spawners,
+                beaconLike, suspiciousPatterns);
+        }
+
+        /** Recomputes and stores the classification and confidence from the current counters. */
+        public void refreshClassification() {
+            int score = score();
+            confidence = score;
+            classification = dev.basehunt.bhclient.core.logic.StashScorer
+                .classify(score, totalStorage()).describe();
         }
 
         public void merge(Stash other) {
@@ -171,9 +217,12 @@ public class StashManager extends System<StashManager> {
             hoppers = Math.max(hoppers, other.hoppers);
             dispensers = Math.max(dispensers, other.dispensers);
             spawners = Math.max(spawners, other.spawners);
+            beaconLike = Math.max(beaconLike, other.beaconLike);
+            suspiciousPatterns = Math.max(suspiciousPatterns, other.suspiciousPatterns);
 
             lastSeen = java.lang.System.currentTimeMillis();
             dimension = other.dimension;
+            refreshClassification();
         }
 
         public String describeCounts() {
@@ -187,6 +236,7 @@ public class StashManager extends System<StashManager> {
             appendCount(builder, "hopper", hoppers);
             appendCount(builder, "dispenser", dispensers);
             appendCount(builder, "spawner", spawners);
+            appendCount(builder, "beacon", beaconLike);
 
             return builder.isEmpty() ? "none" : builder.toString();
         }
@@ -213,9 +263,15 @@ public class StashManager extends System<StashManager> {
             tag.putInt("hoppers", hoppers);
             tag.putInt("dispensers", dispensers);
             tag.putInt("spawners", spawners);
+            tag.putInt("beaconLike", beaconLike);
+            tag.putInt("suspiciousPatterns", suspiciousPatterns);
 
             tag.putLong("firstSeen", firstSeen);
             tag.putLong("lastSeen", lastSeen);
+
+            tag.putString("classification", classification);
+            tag.putString("discoveryMethod", discoveryMethod);
+            tag.putInt("confidence", confidence);
 
             return tag;
         }
@@ -242,8 +298,19 @@ public class StashManager extends System<StashManager> {
             stash.hoppers = tag.getInt("hoppers", 0);
             stash.dispensers = tag.getInt("dispensers", 0);
             stash.spawners = tag.getInt("spawners", 0);
+            stash.beaconLike = tag.getInt("beaconLike", 0);
+            stash.suspiciousPatterns = tag.getInt("suspiciousPatterns", 0);
             stash.firstSeen = tag.getLong("firstSeen", stash.firstSeen);
             stash.lastSeen = tag.getLong("lastSeen", stash.lastSeen);
+
+            stash.discoveryMethod = tag.getString("discoveryMethod", "scan");
+            // Older saves have no classification; derive it rather than leaving the field blank.
+            String stored = tag.getString("classification", "");
+            if (stored.isEmpty()) stash.refreshClassification();
+            else {
+                stash.classification = stored;
+                stash.confidence = tag.getInt("confidence", stash.score());
+            }
 
             return stash;
         }

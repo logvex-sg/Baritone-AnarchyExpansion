@@ -1,6 +1,8 @@
 package dev.basehunt.bhclient.modules;
 
 import dev.basehunt.bhclient.BaseHuntingAddon;
+import dev.basehunt.bhclient.core.AutomationEvent;
+import dev.basehunt.bhclient.core.AutomationManager;
 import dev.basehunt.bhclient.systems.PlayerTracker;
 import dev.basehunt.bhclient.systems.StashManager;
 import dev.basehunt.bhclient.utils.ServerUtils;
@@ -125,6 +127,89 @@ public class WebhookNotifier extends Module {
         .build()
     );
 
+    // Automation events
+
+    private final SettingGroup sgAutomation = settings.createGroup("Automation Events");
+
+    private final Setting<Boolean> notifyStash = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-stash")
+        .description("Notify when a stash is discovered or grows.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyStructure = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-structure")
+        .description("Notify when an interesting structure is found.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyExploration = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-exploration")
+        .description("Notify on route starts, completions, interruptions and exploration milestones.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyEquipment = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-equipment")
+        .description("Notify when elytras are replaced or durability runs low.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyMending = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-mending")
+        .description("Notify when mending repairs are needed or completed.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyEnderChest = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-ender-chest")
+        .description("Notify when ender chests are found, opened or organised.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyEmergency = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-emergency")
+        .description("Notify on critical survival conditions and danger.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyErrors = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-errors")
+        .description("Notify on internal system errors.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyPlayerSightings = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-player-sightings")
+        .description("Notify when a player is sighted for the first time, and when a logout spot is recorded.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> notifyStorage = sgAutomation.add(new BoolSetting.Builder()
+        .name("notify-storage")
+        .description("Notify about sorting, deposits, withdrawals, restocks, shulkers and workflows.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> automationCooldown = sgAutomation.add(new IntSetting.Builder()
+        .name("event-cooldown-seconds")
+        .description("Minimum gap between two notifications of the same automation event type.")
+        .defaultValue(10)
+        .min(0)
+        .sliderRange(0, 600)
+        .build()
+    );
+
     // Webhook
 
     private final Setting<String> title = sgWebhook.add(new StringSetting.Builder()
@@ -137,6 +222,8 @@ public class WebhookNotifier extends Module {
     private final WebhookSettings webhook = new WebhookSettings(sgWebhook);
 
     private final Map<UUID, Long> lastNotified = new HashMap<>();
+    private final Map<AutomationEvent.Type, Long> lastAutomation = new java.util.EnumMap<>(AutomationEvent.Type.class);
+    private java.util.function.Consumer<AutomationEvent> automationListener;
 
     private long sessionStartedAt;
     private int sessionDeaths;
@@ -172,8 +259,199 @@ public class WebhookNotifier extends Module {
     @Override
     public void onActivate() {
         lastNotified.clear();
+        lastAutomation.clear();
         sessionStartedAt = java.lang.System.currentTimeMillis();
         sessionDeaths = 0;
+
+        AutomationManager manager = AutomationManager.get();
+        if (manager != null) {
+            // A single subscription for every automation event keeps the routing in one place instead of
+            // each producer needing to know which webhook settings apply.
+            automationListener = this::onAutomationEvent;
+            manager.bus().subscribeAll(automationListener);
+        }
+    }
+
+    @Override
+    public void onDeactivate() {
+        AutomationManager manager = AutomationManager.get();
+        if (manager != null && automationListener != null) {
+            manager.bus().unsubscribeAll(automationListener);
+            automationListener = null;
+        }
+    }
+
+    /**
+     * Turns an internal automation event into a webhook, subject to per-category filters and a per-type
+     * cooldown so a flapping condition cannot flood the channel.
+     */
+    private void onAutomationEvent(AutomationEvent event) {
+        if (!isCategoryEnabled(event.type())) return;
+        if (isOnCooldown(event.type())) return;
+
+        WebhookManager.Embed embed = baseEmbed(titleFor(event.type()), colorFor(event.type()));
+        embed.description(describe(event));
+
+        for (var entry : event.data().entrySet()) {
+            embed.field(prettify(entry.getKey()), entry.getValue(), true);
+        }
+
+        if (includeCoordinates.get()) embed.field("Our position", ServerUtils.coordinates());
+
+        send(embed);
+    }
+
+    private boolean isCategoryEnabled(AutomationEvent.Type type) {
+        return switch (type) {
+            case STASH_DISCOVERED, STASH_UPGRADED -> notifyStash.get();
+            case STRUCTURE_FOUND, NEW_CHUNK_CLUSTER -> notifyStructure.get();
+            case ROUTE_STARTED, ROUTE_INTERRUPTED, ROUTE_RESUMED, ROUTE_COMPLETED,
+                 TARGET_REACHED, FRONTIER_PUSHED, EXPLORATION_STALLED, MILESTONE -> notifyExploration.get();
+            case ELYTRA_DURABILITY_LOW, ELYTRA_REPLACED, ELYTRA_MISSING, ELYTRA_BROKEN,
+                 EQUIPMENT_DURABILITY_LOW -> notifyEquipment.get();
+            case MENDING_REPAIR_NEEDED, MENDING_REPAIR_DONE -> notifyMending.get();
+            case ENDER_CHEST_FOUND, ENDER_CHEST_OPENED, ENDER_CHEST_CLOSED, INVENTORY_ORGANISED, INVENTORY_FULL -> notifyEnderChest.get();
+            case HEALTH_CRITICAL, HUNGER_CRITICAL, DANGER_DETECTED, FLIGHT_INTERRUPTED, LANDED_UNEXPECTEDLY,
+                 FLIGHT_DEPLOY_FAILED, DIMENSION_CHANGED -> notifyEmergency.get();
+            case PLAYER_SIGHTED, PLAYER_LOGOUT_SPOT -> notifyPlayerSightings.get();
+            case STORAGE_SORTED, ITEMS_DEPOSITED, ITEMS_WITHDRAWN, ITEMS_RESTOCKED, CONTAINER_REGISTERED,
+                 CONTAINER_OP_FAILED, SHULKER_FILLED, SHULKER_EMPTIED, WORKFLOW_STARTED, WORKFLOW_STEP_DONE,
+                 WORKFLOW_COMPLETED, WORKFLOW_FAILED -> notifyStorage.get();
+            case SYSTEM_ERROR -> notifyErrors.get();
+            default -> false;
+        };
+    }
+
+    private boolean isOnCooldown(AutomationEvent.Type type) {
+        if (automationCooldown.get() <= 0) return false;
+
+        long now = java.lang.System.currentTimeMillis();
+        Long previous = lastAutomation.get(type);
+        if (previous != null && now - previous < automationCooldown.get() * 1000L) return true;
+
+        lastAutomation.put(type, now);
+        return false;
+    }
+
+    private String titleFor(AutomationEvent.Type type) {
+        return switch (type) {
+            case STASH_DISCOVERED -> "Stash discovered";
+            case STASH_UPGRADED -> "Stash grew";
+            case STRUCTURE_FOUND -> "Interesting structure";
+            case NEW_CHUNK_CLUSTER -> "New chunk cluster";
+            case ROUTE_STARTED -> "Route started";
+            case ROUTE_INTERRUPTED -> "Route interrupted";
+            case ROUTE_RESUMED -> "Route resumed";
+            case ROUTE_COMPLETED -> "Route completed";
+            case TARGET_REACHED -> "Target reached";
+            case FRONTIER_PUSHED -> "Frontier pushed";
+            case EXPLORATION_STALLED -> "Exploration stalled";
+            case MILESTONE -> "Milestone";
+            case ELYTRA_DURABILITY_LOW -> "Elytra durability low";
+            case ELYTRA_REPLACED -> "Elytra replaced";
+            case ELYTRA_MISSING -> "No elytra";
+            case ELYTRA_BROKEN -> "Elytra broke";
+            case EQUIPMENT_DURABILITY_LOW -> "Equipment durability low";
+            case MENDING_REPAIR_NEEDED -> "Mending needed";
+            case MENDING_REPAIR_DONE -> "Mending done";
+            case INVENTORY_FULL -> "Inventory full";
+            case ENDER_CHEST_FOUND -> "Ender chest found";
+            case ENDER_CHEST_OPENED -> "Ender chest opened";
+            case ENDER_CHEST_CLOSED -> "Ender chest closed";
+            case INVENTORY_ORGANISED -> "Inventory organised";
+            case HEALTH_CRITICAL -> "Health critical";
+            case HUNGER_CRITICAL -> "Hunger critical";
+            case DANGER_DETECTED -> "Danger detected";
+            case FLIGHT_INTERRUPTED -> "Flight interrupted";
+            case LANDED_UNEXPECTEDLY -> "Landed unexpectedly";
+            case FLIGHT_DEPLOY_FAILED -> "Flight deployment failed";
+            case DIMENSION_CHANGED -> "Dimension changed";
+            case PLAYER_SIGHTED -> "Player sighted";
+            case PLAYER_LOGOUT_SPOT -> "Logout spot recorded";
+            case SYSTEM_ERROR -> "System error";
+            case STORAGE_SORTED -> "Storage sorted";
+            case ITEMS_DEPOSITED -> "Items deposited";
+            case ITEMS_WITHDRAWN -> "Items withdrawn";
+            case ITEMS_RESTOCKED -> "Restocked";
+            case CONTAINER_REGISTERED -> "Container registered";
+            case CONTAINER_OP_FAILED -> "Storage operation failed";
+            case SHULKER_FILLED -> "Shulker filled";
+            case SHULKER_EMPTIED -> "Shulker emptied";
+            case WORKFLOW_STARTED -> "Workflow started";
+            case WORKFLOW_STEP_DONE -> "Workflow step done";
+            case WORKFLOW_COMPLETED -> "Workflow completed";
+            case WORKFLOW_FAILED -> "Workflow failed";
+            default -> prettify(type.name());
+        };
+    }
+
+    private int colorFor(AutomationEvent.Type type) {
+        return switch (type) {
+            case STASH_DISCOVERED -> 0xFFD700;
+            case STASH_UPGRADED, STRUCTURE_FOUND, NEW_CHUNK_CLUSTER -> 0xFFAA00;
+            case ROUTE_STARTED, ROUTE_RESUMED, TARGET_REACHED -> 0x00C8FF;
+            case ROUTE_COMPLETED, MENDING_REPAIR_DONE, INVENTORY_ORGANISED -> 0x00FF88;
+            case ROUTE_INTERRUPTED, EXPLORATION_STALLED, MENDING_REPAIR_NEEDED, ELYTRA_DURABILITY_LOW,
+                 ELYTRA_MISSING, EQUIPMENT_DURABILITY_LOW, INVENTORY_FULL -> 0xFFAA00;
+            case ELYTRA_REPLACED, ENDER_CHEST_FOUND, ENDER_CHEST_OPENED -> 0x00C8FF;
+            case PLAYER_SIGHTED, PLAYER_LOGOUT_SPOT -> 0xFF0080;
+            case STORAGE_SORTED, ITEMS_DEPOSITED, ITEMS_WITHDRAWN, ITEMS_RESTOCKED, SHULKER_FILLED,
+                 SHULKER_EMPTIED, WORKFLOW_STARTED, WORKFLOW_STEP_DONE, WORKFLOW_COMPLETED -> 0x00FF88;
+            case CONTAINER_REGISTERED -> 0x00C8FF;
+            case CONTAINER_OP_FAILED, WORKFLOW_FAILED -> 0xFF5555;
+            case ELYTRA_BROKEN, HEALTH_CRITICAL, HUNGER_CRITICAL, DANGER_DETECTED, FLIGHT_INTERRUPTED,
+                 LANDED_UNEXPECTEDLY, FLIGHT_DEPLOY_FAILED, SYSTEM_ERROR -> 0xFF5555;
+            default -> 0xAAAAAA;
+        };
+    }
+
+    private String describe(AutomationEvent event) {
+        return switch (event.type()) {
+            case ROUTE_INTERRUPTED -> "The route was interrupted and its progress was saved.";
+            case ROUTE_RESUMED -> "The route resumed from the saved target.";
+            case EXPLORATION_STALLED -> "Nothing new found for %s minute(s), expanding the sweep.".formatted(event.get("minutes"));
+            case DANGER_DETECTED -> "A dangerous condition was detected.";
+            case PLAYER_SIGHTED -> "A player was sighted at %s, %s, %s.".formatted(
+                event.get("x"), event.get("y"), event.get("z"));
+            case PLAYER_LOGOUT_SPOT -> "%s logged out at %s.".formatted(event.get("player"), event.get("logout"));
+            case STASH_DISCOVERED, STASH_UPGRADED -> "%s (%s)".formatted(
+                event.get("classification"), "score " + event.get("score"));
+            case STORAGE_SORTED -> "%s item(s) sorted in %s.".formatted(event.get("moves"), event.get("scope"));
+            case ITEMS_DEPOSITED -> "%s stack(s) deposited into %s.".formatted(
+                event.get("stacks"), event.get("container"));
+            case ITEMS_WITHDRAWN -> "%s stack(s) withdrawn from %s.".formatted(
+                event.get("stacks"), event.get("container"));
+            case ITEMS_RESTOCKED -> "Restocked %s item(s) from storage.".formatted(event.get("items"));
+            case CONTAINER_REGISTERED -> "Registered %s at %s.".formatted(event.get("type"), event.get("pos"));
+            case CONTAINER_OP_FAILED -> "A storage operation failed: %s.".formatted(event.get("reason"));
+            case SHULKER_FILLED -> "Filled a shulker box with %s stack(s).".formatted(event.get("stacks"));
+            case SHULKER_EMPTIED -> "Emptied a shulker box (%s stack(s)).".formatted(event.get("stacks"));
+            case WORKFLOW_STARTED -> "Workflow '%s' started.".formatted(event.get("workflow"));
+            case WORKFLOW_STEP_DONE -> "Workflow '%s' step: %s.".formatted(event.get("workflow"), event.get("step"));
+            case WORKFLOW_COMPLETED -> "Workflow '%s' completed.".formatted(event.get("workflow"));
+            case WORKFLOW_FAILED -> "Workflow '%s' failed at %s.".formatted(event.get("workflow"), event.get("step"));
+            default -> "";
+        };
+    }
+
+    private static String prettify(String raw) {
+        if (raw == null || raw.isEmpty()) return raw;
+
+        StringBuilder builder = new StringBuilder(raw.length());
+        boolean upper = true;
+
+        for (char c : raw.toCharArray()) {
+            if (c == '-' || c == '_') {
+                builder.append(' ');
+                upper = true;
+                continue;
+            }
+
+            builder.append(upper ? Character.toUpperCase(c) : c);
+            upper = false;
+        }
+
+        return builder.toString();
     }
 
     @EventHandler

@@ -502,6 +502,16 @@ public class NewChunks extends Module {
         int centerX = (int) (sumX / batch.size());
         int centerZ = (int) (sumZ / batch.size());
 
+        dev.basehunt.bhclient.core.AutomationManager manager = dev.basehunt.bhclient.core.AutomationManager.get();
+        if (manager != null) {
+            manager.publish(dev.basehunt.bhclient.core.AutomationEvent.of(
+                dev.basehunt.bhclient.core.AutomationEvent.Type.NEW_CHUNK_CLUSTER, name,
+                java.util.Map.of(
+                    "count", String.valueOf(batch.size()),
+                    "center", "%d, %d".formatted(centerX, centerZ),
+                    "dimension", ServerUtils.dimension())));
+        }
+
         webhook.send(new WebhookManager.Embed()
             .title("New chunk cluster")
             .description("%d new chunks detected in the last %d seconds.".formatted(batch.size(), notifyIntervalSeconds.get()))

@@ -3,7 +3,7 @@
   "id": "basehunting",
   "version": "${version}",
   "name": "Base Hunting Client",
-  "description": "Baritone-powered base hunting for anarchy servers. Elytra autopilot, new chunk detection, stash finding, login/logout tracking and fully configurable Discord webhook notifications.",
+  "description": "Anarchy base-hunting toolkit. Firework-free elytra autopilot with automatic elytra management, adaptive exploration, stash and new-chunk detection, player tracking, mending and ender chest handling, a safe storage system (inventory sorting, chest sorting, a container network, shulker work and restocking), survival guardrails and fully configurable Discord webhook notifications.",
   "authors": [
     "logvex-sg"
   ],

@@ -80,7 +80,23 @@ tasks.register<JavaExec>("apiContractTest") {
 tasks.register("verifyAddon") {
     group = "verification"
     description = "Runs the headless planner and API contract tests."
-    dependsOn("plannerTest", "apiContractTest")
+    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "apiContractTest")
+}
+
+tasks.register<JavaExec>("storageLogicTest") {
+    group = "verification"
+    description = "Runs the storage, sorting, routing, restock, shulker, workflow and operation tests."
+    dependsOn("testClasses")
+    classpath = sourceSets.test.get().runtimeClasspath + sourceSets.test.get().output
+    mainClass.set("dev.basehunt.bhclient.StorageLogicTest")
+}
+
+tasks.register<JavaExec>("coreLogicTest") {
+    group = "verification"
+    description = "Runs the pure logic tests (elytra, scoring, inventory, scheduler) headlessly."
+    dependsOn("testClasses")
+    classpath = sourceSets.test.get().runtimeClasspath + sourceSets.test.get().output
+    mainClass.set("dev.basehunt.bhclient.CoreLogicTest")
 }
 
 // The planner tests are a plain main class rather than JUnit, so the default test task has nothing to
