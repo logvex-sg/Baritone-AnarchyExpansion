@@ -27,7 +27,7 @@ import java.nio.file.Files;
  */
 public final class DatabaseIO {
     private static final String EXPORT_FILE_NAME = "base-hunting-export.nbt";
-    private static final int FORMAT_VERSION = 2;
+    private static final int FORMAT_VERSION = 3;
 
     /**
      * One persisted store: the key it is stored under and how to reach it. Keeping this as data (rather
@@ -44,7 +44,10 @@ public final class DatabaseIO {
         new Section("exploration", ExplorationStore::get),
         new Section("storage", StorageRegistry::get),
         new Section("workflows", WorkflowManager::get),
-        new Section("kits", KitBotStore::get)
+        new Section("kits", KitBotStore::get),
+        new Section("kitLoadouts", KitLoadoutStore::get),
+        new Section("sixbtServer", SixbtServerStore::get),
+        new Section("sixbtPlayers", SixbtPlayerStore::get)
     );
 
     private DatabaseIO() {

@@ -14,6 +14,11 @@ import dev.basehunt.bhclient.core.terminal.TerminalBuffer;
 import dev.basehunt.bhclient.core.terminal.TerminalCommand;
 import dev.basehunt.bhclient.core.terminal.TerminalContext;
 import dev.basehunt.bhclient.gui.BaseHuntingScreen;
+import dev.basehunt.bhclient.modules.SixbtHomeManager;
+import dev.basehunt.bhclient.modules.SixbtHotspotTracker;
+import dev.basehunt.bhclient.modules.SixbtPlayerTracker;
+import dev.basehunt.bhclient.modules.SixbtTpaManager;
+import dev.basehunt.bhclient.modules.SixbtTpsMonitor;
 import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.systems.DatabaseIO;
 import dev.basehunt.bhclient.systems.EnderChestStore;
@@ -241,14 +246,37 @@ public class CommandTerminal extends Module {
             .sub("stop", ChatPermissions.Level.MOVEMENT)
             .build(), this::baritone);
 
-        registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>]",
-            "list kits, their cooldowns, or claim one", ChatPermissions.Level.READ_ONLY)
+        registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>]",
+            "claim kits, or run the 6b6t kit-maker delivery role", ChatPermissions.Level.READ_ONLY)
             .aliases("kits")
             .sub("list", ChatPermissions.Level.READ_ONLY)
             .sub("status", ChatPermissions.Level.READ_ONLY)
             .sub("claim", ChatPermissions.Level.CONTROL)
-            .completions(index -> index == 0 ? List.of("list", "status", "claim") : kitNames())
+            .sub("delivery", ChatPermissions.Level.READ_ONLY)
+            .sub("deliver", ChatPermissions.Level.MOVEMENT)
+            .sub("loadout", ChatPermissions.Level.READ_ONLY)
+            .sub("restock", ChatPermissions.Level.READ_ONLY)
+            .sub("queue", ChatPermissions.Level.READ_ONLY)
+            .completions(index -> index == 0
+                ? List.of("list", "status", "claim", "delivery", "deliver", "loadout", "restock", "queue")
+                : kitNames())
             .build(), this::kit);
+
+        registry.register(TerminalCommand.builder("sixbt", "sixbt [status|home|tpa|tps|hotspot|players|server|gui]",
+            "6b6t server tools: homes, teleport requests, TPS, hotspots and players", ChatPermissions.Level.READ_ONLY)
+            .aliases("6b6t")
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("home", ChatPermissions.Level.READ_ONLY)
+            .sub("tpa", ChatPermissions.Level.READ_ONLY)
+            .sub("tps", ChatPermissions.Level.READ_ONLY)
+            .sub("hotspot", ChatPermissions.Level.READ_ONLY)
+            .sub("players", ChatPermissions.Level.READ_ONLY)
+            .sub("server", ChatPermissions.Level.READ_ONLY)
+            .sub("gui", ChatPermissions.Level.READ_ONLY)
+            .completions(index -> index == 0
+                ? List.of("status", "home", "tpa", "tps", "hotspot", "players", "server", "gui")
+                : List.of())
+            .build(), this::sixbt);
 
         registry.register(TerminalCommand.builder("elytra", "elytra [status|replace]",
             "show the elytra status or swap in the best spare", ChatPermissions.Level.READ_ONLY)
@@ -617,8 +645,187 @@ public class CommandTerminal extends Module {
                 }
                 context.info(bot.claim(context.arg(1)));
             }
-            default -> context.error("usage: kit [list|status|claim <name>]");
+            case "delivery" -> {
+                for (String line : bot.describeDelivery()) context.info("%s", line);
+            }
+            case "deliver" -> {
+                if (context.argCount() < 3) {
+                    context.error("usage: kit deliver <player> <kit>");
+                    return;
+                }
+                context.info(bot.deliverTo(context.arg(1), context.arg(2)));
+            }
+            case "queue" -> {
+                if (context.argCount() >= 2 && context.arg(1).equalsIgnoreCase("clear")) {
+                    context.info(bot.clearQueue());
+                } else {
+                    for (String line : bot.describeDelivery()) context.info("%s", line);
+                }
+            }
+            case "loadout" -> kitLoadout(context, bot);
+            case "restock" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: kit restock <kit>");
+                    return;
+                }
+                for (String line : bot.restockFor(context.arg(1)).describe()) context.info("%s", line);
+            }
+            default -> context.error("usage: kit [list|status|claim|delivery|deliver|loadout|restock|queue]");
         }
+    }
+
+    /** {@code kit loadout <list|show|add|remove|create|delete> ...} */
+    private void kitLoadout(TerminalContext context, KitBot bot) {
+        String action = context.arg(1).toLowerCase(Locale.ROOT);
+        switch (action.isEmpty() ? "list" : action) {
+            case "list" -> {
+                for (String line : bot.loadouts().describe()) context.info("%s", line);
+            }
+            case "show" -> {
+                if (context.argCount() < 3) {
+                    context.error("usage: kit loadout show <kit>");
+                    return;
+                }
+                for (String line : bot.loadouts().findOrDefault(context.arg(2)).describe()) context.info("%s", line);
+            }
+            case "add" -> {
+                if (context.argCount() < 4) {
+                    context.error("usage: kit loadout add <kit> <item> [count]");
+                    return;
+                }
+                context.info(bot.addLoadoutItem(context.arg(2), context.arg(3), context.intArg(4, 1)));
+            }
+            case "remove" -> {
+                if (context.argCount() < 4) {
+                    context.error("usage: kit loadout remove <kit> <item>");
+                    return;
+                }
+                context.info(bot.removeLoadoutItem(context.arg(2), context.arg(3)));
+            }
+            case "create" -> {
+                if (context.argCount() < 3) {
+                    context.error("usage: kit loadout create <kit>");
+                    return;
+                }
+                context.info(bot.createLoadout(context.arg(2)));
+            }
+            case "delete" -> {
+                if (context.argCount() < 3) {
+                    context.error("usage: kit loadout delete <kit>");
+                    return;
+                }
+                context.info(bot.deleteLoadout(context.arg(2)));
+            }
+            default -> context.error("usage: kit loadout [list|show|add|remove|create|delete]");
+        }
+    }
+
+    /** {@code sixbt <group> ...} */
+    private void sixbt(TerminalContext context) {
+        String sub = context.arg(0).toLowerCase(Locale.ROOT);
+        switch (sub.isEmpty() ? "status" : sub) {
+            case "status" -> {
+                context.info("server: %s (%s)", ServerUtils.serverAddress(),
+                    dev.basehunt.bhclient.core.sixbt.SixbtCommand.isSixbtServer(ServerUtils.serverAddress())
+                        ? "6b6t" : "not 6b6t");
+                context.info("position: %s", ServerUtils.coordinates());
+                sixbtModuleLine(context, KitBot.class, bot -> "kit delivery: " + bot.deliveryStatusLine());
+                sixbtModuleLine(context, SixbtHomeManager.class, SixbtHomeManager::statusLine);
+                sixbtModuleLine(context, SixbtTpaManager.class, SixbtTpaManager::statusLine);
+                sixbtModuleLine(context, SixbtTpsMonitor.class, SixbtTpsMonitor::statusLine);
+                sixbtModuleLine(context, SixbtHotspotTracker.class, SixbtHotspotTracker::statusLine);
+                sixbtModuleLine(context, SixbtPlayerTracker.class, SixbtPlayerTracker::statusLine);
+            }
+            case "home" -> {
+                SixbtHomeManager homes = Modules.get().get(SixbtHomeManager.class);
+                if (homes == null) {
+                    context.error("the home manager is not loaded");
+                    return;
+                }
+                String action = context.arg(1).toLowerCase(Locale.ROOT);
+                switch (action.isEmpty() ? "list" : action) {
+                    case "list" -> homes.describe().forEach(line -> context.info("%s", line));
+                    case "set" -> context.info(homes.setHome(context.arg(2)));
+                    case "goto", "visit" -> context.info(homes.visitHome(context.arg(2)));
+                    case "del", "delete" -> context.info(homes.deleteHome(context.arg(2)));
+                    case "cancel" -> context.info(homes.cancel());
+                    default -> context.error("usage: sixbt home [list|set <name>|goto <name>|del <name>|cancel]");
+                }
+            }
+            case "tpa" -> {
+                SixbtTpaManager tpa = Modules.get().get(SixbtTpaManager.class);
+                if (tpa == null) {
+                    context.error("the tpa manager is not loaded");
+                    return;
+                }
+                String action = context.arg(1).toLowerCase(Locale.ROOT);
+                switch (action) {
+                    case "send", "to" -> context.info(tpa.request(context.arg(2)));
+                    case "cancel" -> context.info(tpa.cancel());
+                    case "accept", "yes" -> context.info(tpa.accept(context.arg(2)));
+                    case "decline", "no" -> context.info(tpa.decline(context.arg(2)));
+                    default -> tpa.describe().forEach(line -> context.info("%s", line));
+                }
+            }
+            case "tps" -> {
+                SixbtTpsMonitor tps = Modules.get().get(SixbtTpsMonitor.class);
+                if (tps == null) {
+                    context.error("the TPS monitor is not loaded");
+                    return;
+                }
+                if (context.argCount() >= 2 && context.arg(1).equalsIgnoreCase("poll")) {
+                    if (mc.player != null && mc.player.networkHandler != null) {
+                        mc.player.networkHandler.sendChatMessage("/tps");
+                    }
+                    context.info("polled /tps");
+                } else {
+                    tps.describe().forEach(line -> context.info("%s", line));
+                }
+            }
+            case "hotspot" -> {
+                SixbtHotspotTracker hotspot = Modules.get().get(SixbtHotspotTracker.class);
+                if (hotspot == null) {
+                    context.error("the hotspot tracker is not loaded");
+                    return;
+                }
+                String action = context.arg(1).toLowerCase(Locale.ROOT);
+                switch (action) {
+                    case "join" -> context.info(hotspot.join());
+                    case "create" -> context.info(hotspot.create());
+                    case "cancel" -> context.info(hotspot.cancel());
+                    case "info" -> context.info(hotspot.requestInfo());
+                    default -> hotspot.describe().forEach(line -> context.info("%s", line));
+                }
+            }
+            case "players" -> {
+                SixbtPlayerTracker tracker = Modules.get().get(SixbtPlayerTracker.class);
+                if (tracker == null) {
+                    context.error("the player tracker is not loaded");
+                    return;
+                }
+                tracker.describe().forEach(line -> context.info("%s", line));
+            }
+            case "server" -> {
+                String query = context.arg(1);
+                var entries = dev.basehunt.bhclient.core.sixbt.SixbtCommand.all();
+                for (var entry : entries) {
+                    if (!query.isEmpty() && !entry.name().contains(query.toLowerCase(Locale.ROOT))) continue;
+                    context.info("/%s - %s", entry.name(), entry.summary());
+                }
+            }
+            case "gui" -> {
+                dev.basehunt.bhclient.gui.SixbtMenuScreen.open(
+                    meteordevelopment.meteorclient.gui.GuiThemes.get());
+                context.info("opened the 6b6t menu");
+            }
+            default -> context.error("usage: sixbt [status|home|tpa|tps|hotspot|players|server|gui]");
+        }
+    }
+
+    private <T extends Module> void sixbtModuleLine(TerminalContext context, Class<T> type,
+                                                   java.util.function.Function<T, String> line) {
+        T module = Modules.get().get(type);
+        context.info("%s", module == null ? "(not loaded)" : line.apply(module));
     }
 
     private void elytra(TerminalContext context) {

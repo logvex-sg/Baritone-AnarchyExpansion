@@ -87,6 +87,7 @@ public class BaseHuntingScreen extends WindowScreen {
         survivalSection();
         notificationSection();
         databaseSection();
+        sixbtSection();
         terminalSection();
     }
 
@@ -705,6 +706,18 @@ public class BaseHuntingScreen extends WindowScreen {
     private static String timePrefix(long timestamp) {
         long seconds = Math.max(0, (System.currentTimeMillis() - timestamp) / 1000L);
         return "[%02d:%02d] ".formatted(seconds / 60, seconds % 60);
+    }
+
+    private void sixbtSection() {
+        add(theme.section("6b6t")).expandX().widget();
+
+        KitBot kitBot = Modules.get().get(KitBot.class);
+        add(theme.label("Kit delivery: " + (kitBot == null ? "module not loaded" : kitBot.deliveryStatusLine())));
+
+        var actions = add(theme.horizontalList()).expandX().widget();
+
+        WButton open = actions.add(theme.button("Open 6b6t Menu")).expandX().widget();
+        open.action = () -> taskAfterRender = () -> SixbtMenuScreen.open(theme);
     }
 
     private void infoLine(String message) {

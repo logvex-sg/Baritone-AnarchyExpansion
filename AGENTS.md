@@ -9,13 +9,13 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.2.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.5.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs eight plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs nine plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
@@ -38,6 +38,12 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 - `terminalLogicTest` — the command-terminal suite: the quote- and backslash-aware line parser, the
   history cursor and draft restore, the shortcut table, registry dispatch/aliases, per-subcommand
   permission levels, the confirmation gate, tab completion and the macro store. 86 assertions, pure.
+- `sixbtLogicTest` — the 6b6t suite: the server command catalogue and address check, the chat line
+  parser (vanilla/ranked senders, command echo, tpa requests), kit-request parsing, the
+  `KitDeliveryMachine` state machine and every failure path, the bounded `KitRequestQueue`, kit
+  loadouts and their parsing, the restock comparison, the TPS and hotspot parsers, the `TpaPolicy` and
+  the home book. 106 assertions, pure — which is what makes a bot that teleports and kills itself safe
+  to change.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
@@ -118,20 +124,31 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              CommandHistory (cursor + draft), CommandAliases (shortcuts),
 │   │                              MacroStore (named command sequences replayed via the registry)
 │   └── kit/                       Kit, KitRegistry, KitResponses (classify the server's reply)
+│   └── sixbt/                     6b6t server logic (pure): SixbtCommand (command catalogue +
+│                                  address check), SixbtChat (chat line + kit-request + tpa parsing),
+│                                  KitDeliveryMachine (delivery state machine, actions as data),
+│                                  KitRequestQueue (bounded, per-player cooldown), KitLoadout /
+│                                  KitLoadoutRegistry / KitRestockPlan (kit-maker loadouts),
+│                                  HomeBook (homes + limit), TpaPolicy, TpsMonitor, HotspotInfo
 ├── modules/                     BaseHunter (v1), BaseHunterV2, NewChunks, StashFinder,
 │                                PlayerLogger, AutoLog, WebhookNotifier, MendingManager,
 │                                EnderChestManager, SurvivalManager,
 │                                InventoryManager, ChestSorter, StorageNetwork, ShulkerManager,
 │                                RestockManager, StorageMonitor,
-│                                AutomationBrain (rule reactions), ChatCommands, KitBot, AutoStorage,
-│                                CommandTerminal (the terminal runtime: registry ↔ managers)
+│                                AutomationBrain (rule reactions), ChatCommands, KitBot (claimer +
+│                                6b6t kit maker), AutoStorage, CommandTerminal (the terminal
+│                                runtime: registry ↔ managers),
+│                                SixbtHomeManager, SixbtTpaManager, SixbtTpsMonitor,
+│                                SixbtHotspotTracker, SixbtPlayerTracker (the 6b6t modules)
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
-│                                StorageRegistry, WorkflowManager, KitBotStore (persisted per-server
-│                                state), AutomationEngine (task queue + factories), NavigationManager
+│                                StorageRegistry, WorkflowManager, KitBotStore, KitLoadoutStore,
+│                                SixbtServerStore, SixbtPlayerStore (persisted per-server state),
+│                                AutomationEngine (task queue + factories), NavigationManager
 │                                (single owner of "go to a position"), DatabaseIO (export/import),
 │                                StorageOperations (live container ↔ pure-planner bridge),
 │                                ContainerInteractionManager (the one thing that clicks slots),
-│                                StorageAutomation (task runners for withdraw/deposit), PlayerFacts
+│                                StorageAutomation (task runners for withdraw/deposit), PlayerFacts,
+│                                KitDeliveryService (drives KitDeliveryMachine on the client)
 └── utils/                       BaritoneHelper, ElytraController, ElytraManager, FlightController,
                                  EquipmentScanner, FlightPlanner, WebhookManager, ServerUtils,
                                  WebhookSettings, ContainerHelper, CategoryParser
@@ -263,20 +280,34 @@ single source of truth for which stores are covered; a headless test pins it aga
 stores, so a newly added store that is left out of export/import fails the build instead of silently
 missing from every backup.
 
-**Saved state** uses `StashManager`, `PlayerTracker`, `EnderChestStore` and `ExplorationStore` with NBT
-serialisation, keyed per server address. All four are registered with `Systems.add(...)` *before*
-`Modules.get().add(...)` in `onInitialize()`; registering late discards their saved data on startup.
-`ExplorationStore` stores visited chunks as a `long[]` of packed `ChunkPos` keys and bounds the
-in-memory set (`ExploredRegions`) so a long session cannot grow without limit.
+**Saved state** uses `StashManager`, `PlayerTracker`, `EnderChestStore`, `ExplorationStore`,
+`StorageRegistry`, `WorkflowManager`, `KitBotStore`, `KitLoadoutStore`, `SixbtServerStore` and
+`SixbtPlayerStore` with NBT serialisation, keyed per server address. All ten are registered with
+`Systems.add(...)` *before* `Modules.get().add(...)` in `onInitialize()`; registering late discards
+their saved data on startup. `ExplorationStore` stores visited chunks as a `long[]` of packed `ChunkPos`
+keys and bounds the in-memory set (`ExploredRegions`) so a long session cannot grow without limit.
+`SixbtPlayerStore` is likewise capped and evicting, because an anarchy server has effectively unlimited
+player names.
 
-**Persisted records decode tolerantly through `RecordCodec`.** All four stores write a `version` int and
+**The 6b6t feature set is pure logic plus a thin skin.** `core/sixbt/` holds every decision — the
+command catalogue, the chat/kit-request/tpa parsers, the kit-delivery state machine (whose actions are
+data: `SendTpa`, `DropItem`, `KillSelf`, …), the request queue, loadouts and the home book — and touches
+no Minecraft class, so `sixbtLogicTest` covers it headlessly. The modules and `systems/KitDeliveryService`
+only carry the actions out on the client. Keep new 6b6t behaviour on the pure side of that line or the
+suite cannot reach it. The kit-maker role is **off by default** (`delivery-enabled`): it teleports the
+player to a stranger and then kills them, so it must never be an accidental default. It uses only
+ordinary client actions (`/tpa`, `PlayerEntity.dropItem`, `/kill`) — no packet spoofing.
+
+**Persisted records decode tolerantly through `RecordCodec`.** Every store writes a `version` int and
 a list of record compounds; `fromTag` reads them via `RecordCodec.decodeList`, which skips an entry that
 is not a compound or whose decoder throws, and counts the skips. A single corrupt record must never cost
 the user the rest of the database. Each store exposes `lastSkippedRecords()` / `lastLoadedVersion()` and
 logs a warning when it skipped anything; `/bh database status` and the GUI Database section report the
 total. `RecordCodec` is pure NBT (no Fabric runtime needed), so `coreLogicTest.recordRecovery` covers
 the recovery and versioning behaviour headlessly. When you add a store, use `RecordCodec` rather than a
-hand-rolled loop, and bump the store's `DB_VERSION` when its record shape changes.
+hand-rolled loop, bump the store's `DB_VERSION` when its record shape changes, add it to
+`DatabaseIO.SECTIONS`, and update the pinned list in `hardeningTest` — the coverage test fails the build
+if the last two are out of step.
 
 **A listener that throws becomes a `SYSTEM_ERROR` event.** `AutomationBus.reportListenerFailure` catches
 the exception, logs it, and republishes a `SYSTEM_ERROR` event so the failure is visible without taking

@@ -23,6 +23,11 @@ import dev.basehunt.bhclient.modules.NewChunks;
 import dev.basehunt.bhclient.modules.PlayerLogger;
 import dev.basehunt.bhclient.modules.RestockManager;
 import dev.basehunt.bhclient.modules.ShulkerManager;
+import dev.basehunt.bhclient.modules.SixbtHomeManager;
+import dev.basehunt.bhclient.modules.SixbtHotspotTracker;
+import dev.basehunt.bhclient.modules.SixbtPlayerTracker;
+import dev.basehunt.bhclient.modules.SixbtTpaManager;
+import dev.basehunt.bhclient.modules.SixbtTpsMonitor;
 import dev.basehunt.bhclient.modules.StorageMonitor;
 import dev.basehunt.bhclient.modules.StorageNetwork;
 import dev.basehunt.bhclient.modules.SurvivalManager;
@@ -944,12 +949,358 @@ public class BaseHuntCommand extends Command {
                 info("%s", bot.claimAll());
                 return SINGLE_SUCCESS;
             }))
+            .then(literal("delivery").executes(context -> {
+                kitDeliveryStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("deliver")
+                .then(argument("player", StringArgumentType.word())
+                    .then(argument("kit", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot == null) {
+                            error("The kit bot is not loaded.");
+                            return SINGLE_SUCCESS;
+                        }
+                        info("%s", bot.deliverTo(StringArgumentType.getString(context, "player"),
+                            StringArgumentType.getString(context, "kit")));
+                        return SINGLE_SUCCESS;
+                    })))
+            )
+            .then(literal("queue")
+                .executes(context -> {
+                    kitDeliveryStatus();
+                    return SINGLE_SUCCESS;
+                })
+                .then(literal("clear").executes(context -> {
+                    KitBot bot = Modules.get().get(KitBot.class);
+                    if (bot != null) info("%s", bot.clearQueue());
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("loadout")
+                .executes(context -> {
+                    kitLoadoutList();
+                    return SINGLE_SUCCESS;
+                })
+                .then(literal("list").executes(context -> {
+                    kitLoadoutList();
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("show")
+                    .then(argument("kit", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot == null) return SINGLE_SUCCESS;
+                        for (String line : bot.loadouts().findOrDefault(StringArgumentType.getString(context, "kit"))
+                            .describe()) {
+                            info("%s", line);
+                        }
+                        return SINGLE_SUCCESS;
+                    }))
+                )
+                .then(literal("add")
+                    .then(argument("kit", StringArgumentType.word())
+                        .then(argument("item", StringArgumentType.word()).executes(context -> {
+                            KitBot bot = Modules.get().get(KitBot.class);
+                            if (bot != null) {
+                                info("%s", bot.addLoadoutItem(StringArgumentType.getString(context, "kit"),
+                                    StringArgumentType.getString(context, "item"), 1));
+                            }
+                            return SINGLE_SUCCESS;
+                        })
+                            .then(argument("count", integer(1, 2304)).executes(context -> {
+                                KitBot bot = Modules.get().get(KitBot.class);
+                                if (bot != null) {
+                                    info("%s", bot.addLoadoutItem(StringArgumentType.getString(context, "kit"),
+                                        StringArgumentType.getString(context, "item"), getInteger(context, "count")));
+                                }
+                                return SINGLE_SUCCESS;
+                            }))))
+                )
+                .then(literal("remove")
+                    .then(argument("kit", StringArgumentType.word())
+                        .then(argument("item", StringArgumentType.word()).executes(context -> {
+                            KitBot bot = Modules.get().get(KitBot.class);
+                            if (bot != null) {
+                                info("%s", bot.removeLoadoutItem(StringArgumentType.getString(context, "kit"),
+                                    StringArgumentType.getString(context, "item")));
+                            }
+                            return SINGLE_SUCCESS;
+                        })))
+                )
+                .then(literal("create")
+                    .then(argument("kit", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot != null) info("%s", bot.createLoadout(StringArgumentType.getString(context, "kit")));
+                        return SINGLE_SUCCESS;
+                    }))
+                )
+                .then(literal("delete")
+                    .then(argument("kit", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot != null) info("%s", bot.deleteLoadout(StringArgumentType.getString(context, "kit")));
+                        return SINGLE_SUCCESS;
+                    }))
+                )
+            )
+            .then(literal("restock")
+                .then(argument("kit", StringArgumentType.word()).executes(context -> {
+                    KitBot bot = Modules.get().get(KitBot.class);
+                    if (bot == null) return SINGLE_SUCCESS;
+                    for (String line : bot.restockFor(StringArgumentType.getString(context, "kit")).describe()) {
+                        info("%s", line);
+                    }
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("gui").executes(context -> {
+                dev.basehunt.bhclient.gui.SixbtMenuScreen.open(GuiThemes.get());
+                return SINGLE_SUCCESS;
+            }))
         );
 
         builder.then(literal("kits").executes(context -> {
             kitStatus();
             return SINGLE_SUCCESS;
         }));
+
+        buildSixbt(builder);
+    }
+
+    private void buildSixbt(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("6b6t")
+            .executes(context -> {
+                sixbtStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                sixbtStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("gui").executes(context -> {
+                dev.basehunt.bhclient.gui.SixbtMenuScreen.open(GuiThemes.get());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("home")
+                .executes(context -> {
+                    sixbtHomeList();
+                    return SINGLE_SUCCESS;
+                })
+                .then(literal("list").executes(context -> {
+                    sixbtHomeList();
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("set")
+                    .executes(context -> {
+                        sixbtHome("set", "");
+                        return SINGLE_SUCCESS;
+                    })
+                    .then(argument("name", StringArgumentType.word()).executes(context -> {
+                        sixbtHome("set", StringArgumentType.getString(context, "name"));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("goto")
+                    .then(argument("name", StringArgumentType.word()).executes(context -> {
+                        sixbtHome("goto", StringArgumentType.getString(context, "name"));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("del")
+                    .then(argument("name", StringArgumentType.word()).executes(context -> {
+                        sixbtHome("del", StringArgumentType.getString(context, "name"));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("cancel").executes(context -> {
+                    sixbtHome("cancel", "");
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("tpa")
+                .executes(context -> {
+                    sixbtTpa("", "");
+                    return SINGLE_SUCCESS;
+                })
+                .then(literal("send")
+                    .then(argument("player", StringArgumentType.word()).executes(context -> {
+                        sixbtTpa("send", StringArgumentType.getString(context, "player"));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("cancel").executes(context -> {
+                    sixbtTpa("cancel", "");
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("accept")
+                    .then(argument("player", StringArgumentType.word()).executes(context -> {
+                        sixbtTpa("accept", StringArgumentType.getString(context, "player"));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("decline")
+                    .then(argument("player", StringArgumentType.word()).executes(context -> {
+                        sixbtTpa("decline", StringArgumentType.getString(context, "player"));
+                        return SINGLE_SUCCESS;
+                    })))
+            )
+            .then(literal("tps")
+                .executes(context -> {
+                    sixbtTps("");
+                    return SINGLE_SUCCESS;
+                })
+                .then(literal("poll").executes(context -> {
+                    sixbtTps("poll");
+                    return SINGLE_SUCCESS;
+                })))
+            .then(literal("hotspot")
+                .executes(context -> {
+                    sixbtHotspot("");
+                    return SINGLE_SUCCESS;
+                })
+                .then(literal("join").executes(context -> {
+                    sixbtHotspot("join");
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("create").executes(context -> {
+                    sixbtHotspot("create");
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("cancel").executes(context -> {
+                    sixbtHotspot("cancel");
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("info").executes(context -> {
+                    sixbtHotspot("info");
+                    return SINGLE_SUCCESS;
+                })))
+            .then(literal("players").executes(context -> {
+                SixbtPlayerTracker tracker = Modules.get().get(SixbtPlayerTracker.class);
+                if (tracker == null) {
+                    error("The player tracker is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                tracker.describe().forEach(line -> info("%s", line));
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("commands")
+                .executes(context -> {
+                    sixbtCommands("");
+                    return SINGLE_SUCCESS;
+                })
+                .then(argument("filter", StringArgumentType.word()).executes(context -> {
+                    sixbtCommands(StringArgumentType.getString(context, "filter"));
+                    return SINGLE_SUCCESS;
+                })))
+        );
+    }
+
+    private void sixbtStatus() {
+        String address = ServerUtils.serverAddress();
+        info("Server: %s (%s)", address,
+            dev.basehunt.bhclient.core.sixbt.SixbtCommand.isSixbtServer(address) ? "6b6t" : "not 6b6t");
+        info("Position: %s", ServerUtils.coordinates());
+        KitBot bot = Modules.get().get(KitBot.class);
+        info("Kit delivery: %s", bot == null ? "(not loaded)" : bot.deliveryStatusLine());
+        SixbtHomeManager homes = Modules.get().get(SixbtHomeManager.class);
+        info("Homes: %s", homes == null ? "(not loaded)" : homes.statusLine());
+        SixbtTpaManager tpa = Modules.get().get(SixbtTpaManager.class);
+        info("Tpa: %s", tpa == null ? "(not loaded)" : tpa.statusLine());
+        SixbtTpsMonitor tps = Modules.get().get(SixbtTpsMonitor.class);
+        info("Tps: %s", tps == null ? "(not loaded)" : tps.statusLine());
+        SixbtHotspotTracker hotspot = Modules.get().get(SixbtHotspotTracker.class);
+        info("Hotspot: %s", hotspot == null ? "(not loaded)" : hotspot.statusLine());
+    }
+
+    private void sixbtHomeList() {
+        SixbtHomeManager homes = Modules.get().get(SixbtHomeManager.class);
+        if (homes == null) {
+            error("The home manager is not loaded.");
+            return;
+        }
+        homes.describe().forEach(line -> info("%s", line));
+    }
+
+    private void sixbtHome(String action, String name) {
+        SixbtHomeManager homes = Modules.get().get(SixbtHomeManager.class);
+        if (homes == null) {
+            error("The home manager is not loaded.");
+            return;
+        }
+        switch (action) {
+            case "set" -> info("%s", homes.setHome(name));
+            case "goto" -> info("%s", homes.visitHome(name));
+            case "del" -> info("%s", homes.deleteHome(name));
+            case "cancel" -> info("%s", homes.cancel());
+            default -> sixbtHomeList();
+        }
+    }
+
+    private void sixbtTpa(String action, String player) {
+        SixbtTpaManager tpa = Modules.get().get(SixbtTpaManager.class);
+        if (tpa == null) {
+            error("The tpa manager is not loaded.");
+            return;
+        }
+        switch (action) {
+            case "send" -> info("%s", tpa.request(player));
+            case "cancel" -> info("%s", tpa.cancel());
+            case "accept" -> info("%s", tpa.accept(player));
+            case "decline" -> info("%s", tpa.decline(player));
+            default -> tpa.describe().forEach(line -> info("%s", line));
+        }
+    }
+
+    private void sixbtTps(String action) {
+        SixbtTpsMonitor tps = Modules.get().get(SixbtTpsMonitor.class);
+        if (tps == null) {
+            error("The TPS monitor is not loaded.");
+            return;
+        }
+        if (action.equals("poll")) {
+            if (ServerUtils.mc().player != null && ServerUtils.mc().player.networkHandler != null) {
+                ServerUtils.mc().player.networkHandler.sendChatMessage("/tps");
+            }
+            info("Polled /tps.");
+            return;
+        }
+        tps.describe().forEach(line -> info("%s", line));
+    }
+
+    private void sixbtHotspot(String action) {
+        SixbtHotspotTracker hotspot = Modules.get().get(SixbtHotspotTracker.class);
+        if (hotspot == null) {
+            error("The hotspot tracker is not loaded.");
+            return;
+        }
+        switch (action) {
+            case "join" -> info("%s", hotspot.join());
+            case "create" -> info("%s", hotspot.create());
+            case "cancel" -> info("%s", hotspot.cancel());
+            case "info" -> info("%s", hotspot.requestInfo());
+            default -> hotspot.describe().forEach(line -> info("%s", line));
+        }
+    }
+
+    private void sixbtCommands(String filter) {
+        String needle = filter.toLowerCase(java.util.Locale.ROOT);
+        for (dev.basehunt.bhclient.core.sixbt.SixbtCommand.Entry entry
+            : dev.basehunt.bhclient.core.sixbt.SixbtCommand.all()) {
+            if (!needle.isEmpty() && !entry.name().contains(needle)) continue;
+            info("/%s - %s", entry.name(), entry.summary());
+        }
+    }
+
+    private void kitDeliveryStatus() {
+        KitBot bot = Modules.get().get(KitBot.class);
+        if (bot == null) {
+            error("The kit bot is not loaded.");
+            return;
+        }
+        bot.describeDelivery().forEach(line -> info("%s", line));
+    }
+
+    private void kitLoadoutList() {
+        KitBot bot = Modules.get().get(KitBot.class);
+        if (bot == null) {
+            error("The kit bot is not loaded.");
+            return;
+        }
+        bot.loadouts().describe().forEach(line -> info("%s", line));
     }
 
     private void buildTerminal(LiteralArgumentBuilder<CommandSource> builder) {

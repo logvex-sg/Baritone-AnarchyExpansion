@@ -91,6 +91,23 @@ public record AutomationEvent(Type type, String source, long timestamp, Map<Stri
         KIT_ON_COOLDOWN,
         KIT_AVAILABLE,
 
+        // 6b6t kit delivery
+        KIT_REQUEST_RECEIVED,
+        KIT_DELIVERY_STARTED,
+        KIT_DELIVERY_COMPLETED,
+        KIT_DELIVERY_FAILED,
+        KIT_RESTOCK_NEEDED,
+
+        // 6b6t server features
+        SIXBT_HOME_SET,
+        SIXBT_HOME_VISITED,
+        SIXBT_TPA_SENT,
+        SIXBT_TPA_ACCEPTED,
+        SIXBT_TPA_DECLINED,
+        SIXBT_TPS_LOW,
+        SIXBT_HOTSPOT_ACTIVE,
+        SIXBT_HOTSPOT_ENDED,
+
         // System
         SYSTEM_ERROR,
         MILESTONE

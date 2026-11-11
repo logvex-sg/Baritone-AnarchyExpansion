@@ -3,6 +3,70 @@
 All notable changes to the Base Hunting Client. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] — 2026-11-11
+
+The 6b6t release. The addon gains a set of tools built around [6b6t](https://www.6b6t.org/en), a
+no-rules anarchy server whose command set differs from vanilla, and the kit bot learns the second half
+of its job: on 6b6t kits are handed out by *players*, not the server, so the addon can now act as a kit
+maker as well as a kit claimer. The whole 6b6t feature set is pure logic behind a thin Minecraft skin,
+so it is covered by a new headless suite (106 assertions) and driven by the module screen, the `/bh`
+commands and the terminal alike. `./gradlew build` is green (41 + 147 + 30 + 196 + 21 + 21 + 106 + 131
++ 86 headless assertions).
+
+### Added — 6b6t kit maker
+
+- **`kit-bot → delivery-enabled`.** Off by default, because the delivery role teleports you to a
+  stranger and then kills you to reset. When on, a chat request such as `!kit pvp` is parsed, the
+  requester is teleported to with `/tpa`, the loadout is dropped, and the bot runs `/kill` — the same
+  handshake a 6b6t kit bot performs by hand.
+- **Kit loadouts.** A kit is now a named list of `item xN` lines (`/bh kit loadout add pvp
+  diamond_sword 1`), edited from a dedicated screen or the terminal, and persisted per server. A
+  delivery is refused unless you are carrying the whole loadout, so a bot cannot promise a kit it
+  cannot deliver (`require-stock`).
+- **A bounded request queue** with per-player cooldowns and duplicate suppression, so a spammy requester
+  cannot starve the queue or be served twice.
+- **`KitDeliveryMachine`**, a pure state machine (`idle → waiting-arrival → delivering → finished`, with
+  refusal, timeout and requester-gone failure paths) that decides every action; the module only carries
+  the actions out. It never loops a failed teleport: an unanswered request is cancelled once and the
+  delivery fails with a reason.
+
+### Added — 6b6t server modules
+
+- **`6b6t-homes`** keeps a book of your homes, warns before the server's home limit (which the server
+  never reports, so `home-limit` is a setting), and sets/visits/deletes them. It also notices homes the
+  server confirms in chat, so homes set without the addon are still tracked.
+- **`6b6t-tpa`** sends, cancels and auto-answers teleport requests. Auto-answer is allow-list based and
+  off by default, so a stranger cannot yank you across the map; an unanswered request of ours is
+  withdrawn with `/tpcancel` rather than left open.
+- **`6b6t-tps`** polls `/tps` and warns below a threshold, reporting server *and* personal TPS, because
+  a healthy server with a bad personal TPS means your link is the problem.
+- **`6b6t-hotspot`** tracks the current Hotspot, notifies once when one goes live and can teleport you
+  in; `auto-join` is off because a Hotspot on an anarchy server is a fight.
+- **`6b6t-players`** records every player seen, where and when, with a searchable per-server history. It
+  is bounded and evicting, so a long session cannot grow the file without limit.
+
+### Added — interface
+
+- **6b6t menu** (`/bh 6b6t gui`): one screen with a status line and the controls for each 6b6t module,
+  a loadout editor with add-held-item, and the server's command catalogue. The Base Hunting screen links
+  to it.
+- **`/bh 6b6t …` and `/bh kit …`** command groups, and the terminal gains `sixbt …` plus a much larger
+  `kit …` (`delivery`, `deliver`, `loadout`, `restock`, `queue`). Every entry point calls the same
+  public module method, so they cannot drift apart.
+- **HUD** lines for server TPS, the active Hotspot, home usage, the 6b6t player count and kit delivery.
+
+### Added — data
+
+- Three new per-server stores — kit loadouts, the 6b6t server book (homes) and 6b6t player sightings —
+  all versioned, tolerant of a corrupt record, and part of the whole-database export/import path
+  (format version 3). The database coverage test pins the new section list.
+
+### Notes
+
+- The delivery role uses only ordinary client actions (`/tpa`, dropping items, `/kill`). It does not
+  spoof packets or bypass anything; if the server refuses a teleport, the delivery is reported as failed
+  rather than retried forever.
+
 ## [2.4.0] — 2026-11-11
 
 The command-terminal release. It adds an in-game command terminal: a real command line over the same
