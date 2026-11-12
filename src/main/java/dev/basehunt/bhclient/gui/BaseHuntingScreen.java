@@ -63,7 +63,7 @@ public class BaseHuntingScreen extends WindowScreen {
     private String search = "";
 
     public BaseHuntingScreen(GuiTheme theme) {
-        super(theme, "Base Hunting");
+        super(theme, "Baritone Anarchy Expansion");
     }
 
     /** Opens this screen without leaving a stale parent behind, matching Meteor's own navigation. */

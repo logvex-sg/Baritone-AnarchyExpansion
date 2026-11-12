@@ -1,7 +1,24 @@
 # Changelog
 
-All notable changes to the Base Hunting Client. Format loosely follows [Keep a
+All notable changes to the Baritone Anarchy Expansion. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
+
+## [2.6.1] — 2026-11-12
+
+The rename release. The project is now **Baritone Anarchy Expansion** to match the repository
+(`logvex-sg/Baritone-AnarchyExpansion`). This is an identity change only — no behaviour moved.
+
+- Mod id `basehunting` → `baritone-anarchy-expansion`, so the jar, the Fabric mod list entry and the
+  resource namespace all use the new name.
+- Jar `basehunting-<version>.jar` → `baritone-anarchy-expansion-<version>.jar`; Gradle root project
+  and `archives_base_name` renamed to match.
+- Meteor module category and HUD group are now **Baritone Anarchy Expansion**; the control screen
+  title, the `/bh status` banner and the Discord webhook username follow.
+- The GitHub repo link in the Mod Menu entry now points at the renamed repository.
+- **Saved data is untouched.** Persisted stores are keyed by their own names (`base-hunting-stashes`,
+  `base-hunting-6b6t`, …) inside Meteor's folder, not by the mod id, so upgrading in place keeps every
+  stash, player record, loadout and exploration region. The database export file keeps its
+  `base-hunting-export.nbt` name for the same reason.
 
 ## [2.6.0] — 2026-11-11
 
@@ -110,7 +127,7 @@ commands and the terminal alike. `./gradlew build` is green (41 + 147 + 30 + 196
 ### Added — interface
 
 - **6b6t menu** (`/bh 6b6t gui`): one screen with a status line and the controls for each 6b6t module,
-  a loadout editor with add-held-item, and the server's command catalogue. The Base Hunting screen links
+  a loadout editor with add-held-item, and the server's command catalogue. The Baritone Anarchy Expansion screen links
   to it.
 - **`/bh 6b6t …` and `/bh kit …`** command groups, and the terminal gains `sixbt …` plus a much larger
   `kit …` (`delivery`, `deliver`, `loadout`, `restock`, `queue`). Every entry point calls the same

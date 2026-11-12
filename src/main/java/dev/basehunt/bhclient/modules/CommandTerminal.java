@@ -372,10 +372,10 @@ public class CommandTerminal extends Module {
             .build(), context -> buffer.clear());
 
         registry.register(TerminalCommand.builder("gui", "gui",
-            "open the Base Hunting control screen", ChatPermissions.Level.READ_ONLY)
+            "open the Baritone Anarchy Expansion control screen", ChatPermissions.Level.READ_ONLY)
             .build(), context -> {
                 BaseHuntingScreen.open(GuiThemes.get());
-                context.info("Opened the Base Hunting screen.");
+                context.info("Opened the Baritone Anarchy Expansion screen.");
             });
     }
 
@@ -425,7 +425,7 @@ public class CommandTerminal extends Module {
                     if (module.addon instanceof BaseHuntingAddon) ours.add(module);
                 }
                 ours.sort(java.util.Comparator.comparing(module -> module.name));
-                context.info("Base Hunting modules (%d):", ours.size());
+                context.info("Baritone Anarchy Expansion modules (%d):", ours.size());
                 for (Module module : ours) {
                     context.info("  %-22s %s", module.name, module.isActive() ? "on" : "off");
                 }

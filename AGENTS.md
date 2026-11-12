@@ -9,7 +9,7 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.5.0.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
@@ -75,7 +75,7 @@ from a plain `URLClassLoader` — `net.minecraft.registry.SimpleRegistry` throws
 on `RegistryEntry$Reference.setRegistryKey`. Two workable approaches:
 
 1. **Real client** (preferred, exercises everything): `./gradlew runClient` as above. A successful
-   load prints `Initializing Base Hunting Client` followed by `(Meteor Client) Loading`.
+   load prints `Initializing Baritone Anarchy Expansion` followed by `(Meteor Client) Loading`.
 2. **Targeted unit test**: put the compiled classes, the loom-merged Minecraft jar, and the rest of
    the compile classpath on the *system* classpath, then call `net.minecraft.Bootstrap.initialize()`
    only if the code under test touches registries. `WebhookManager` does not, so it needs no bootstrap.

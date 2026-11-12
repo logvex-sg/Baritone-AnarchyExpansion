@@ -1,4 +1,4 @@
-# Base Hunting Client
+# Baritone Anarchy Expansion
 
 An autonomous base-hunting and equipment-management addon for Meteor Client, built for anarchy
 servers. A firework-free elytra autopilot that manages its own elytra, flies itself, remembers every
@@ -62,8 +62,8 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `basehunting-2.5.0.jar` into `mods`.
-5. Launch the game and look for the **Base Hunting** category in Meteor's GUI.
+4. Drop `baritone-anarchy-expansion-2.6.1.jar` into `mods`.
+5. Launch the game and look for the **Baritone Anarchy Expansion** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
 resolved reflectively at runtime; commands that need pathing report a clear error instead of crashing.
@@ -141,7 +141,7 @@ every alert type.
 
 ## Modules
 
-All under the **Base Hunting** category in Meteor's module list.
+All under the **Baritone Anarchy Expansion** category in Meteor's module list.
 
 | Module | Default | Purpose |
 | --- | --- | --- |
@@ -172,7 +172,7 @@ All under the **Base Hunting** category in Meteor's module list.
 | `6b6t-hotspot` | off | Tracks the current 6b6t Hotspot and can teleport you to it |
 | `6b6t-players` | off | Records 6b6t player sightings with a searchable per-server history |
 
-There is also a **Base Hunting** HUD element with individual toggles for server, position, dimension,
+There is also a **Baritone Anarchy Expansion** HUD element with individual toggles for server, position, dimension,
 flight state, new-chunk/stash/player counts, autopilot target and distance, elytra durability, mending
 status, fireworks, free slots, survival warning, exploration progress, control ownership, the active
 automation task, the kit status and the 6b6t lines (server TPS, hotspot, homes and player count).
@@ -325,7 +325,7 @@ server but are wired for 6b6t's syntax.
 | `6b6t-players` | Records every player seen, where and when, with a searchable per-server history (`/bh 6b6t players`). It is bounded and evicting, so a long session cannot grow the file without limit. |
 
 Everything is also reachable from the **6b6t menu**: `/bh 6b6t gui`, or the *Open 6b6t Menu* button in
-the Base Hunting screen. The menu lists the server's command catalogue and gives each module a status
+the Baritone Anarchy Expansion screen. The menu lists the server's command catalogue and gives each module a status
 line and its controls. The terminal exposes the same tools as `sixbt status|home|tpa|tps|hotspot|players|server|gui`.
 
 ## Storage and inventory
@@ -379,7 +379,7 @@ See [CHANGELOG.md](CHANGELOG.md). The current release is **2.5.0** — the 6b6t 
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.5.0.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```

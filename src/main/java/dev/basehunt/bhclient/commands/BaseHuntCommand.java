@@ -1394,7 +1394,7 @@ public class BaseHuntCommand extends Command {
         builder.then(literal("terminal")
             .executes(context -> {
                 BaseHuntingScreen.open(GuiThemes.get());
-                info("Opened the Base Hunting screen; the Terminal section is at the bottom.");
+                info("Opened the Baritone Anarchy Expansion screen; the Terminal section is at the bottom.");
                 return SINGLE_SUCCESS;
             })
             .then(literal("run")
@@ -1563,7 +1563,7 @@ public class BaseHuntCommand extends Command {
     }
 
     private void status() {
-        info("Base Hunting Client");
+        info("Baritone Anarchy Expansion");
         info("Server: %s (%s)", ServerUtils.serverAddress(), ServerUtils.dimension());
         info("Position: %s", ServerUtils.coordinates());
         info("Baritone: %s", BaritoneHelper.AVAILABLE ? "available" : "missing");

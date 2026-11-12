@@ -57,12 +57,12 @@ import org.slf4j.Logger;
 
 public class BaseHuntingAddon extends MeteorAddon {
     public static final Logger LOG = LogUtils.getLogger();
-    public static final Category CATEGORY = new Category("Base Hunting");
-    public static final HudGroup HUD_GROUP = new HudGroup("Base Hunting");
+    public static final Category CATEGORY = new Category("Baritone Anarchy Expansion");
+    public static final HudGroup HUD_GROUP = new HudGroup("Baritone Anarchy Expansion");
 
     @Override
     public void onInitialize() {
-        LOG.info("Initializing Base Hunting Client");
+        LOG.info("Initializing Baritone Anarchy Expansion");
 
         // Systems have to be registered before Modules.load() runs, otherwise their saved data is lost.
         Systems.add(new StashManager());
@@ -133,6 +133,6 @@ public class BaseHuntingAddon extends MeteorAddon {
 
     @Override
     public GithubRepo getRepo() {
-        return new GithubRepo("logvex-sg", "basehuntingclient-baritone", "main", null);
+        return new GithubRepo("logvex-sg", "Baritone-AnarchyExpansion", "main", null);
     }
 }

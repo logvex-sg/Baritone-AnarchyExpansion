@@ -622,7 +622,7 @@ public class BaseHunterV2 extends Module {
                 .field("Server", ServerUtils.serverAddress())
                 .field("Flown", "%,d blocks".formatted((long) travelledBlocks))
                 .field("Targets visited", String.valueOf(targetsVisited))
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
     }
 
@@ -743,7 +743,7 @@ public class BaseHunterV2 extends Module {
                 .field("Server", ServerUtils.serverAddress())
                 .field("Dimension", ServerUtils.dimension())
                 .field("Baritone", dev.basehunt.bhclient.utils.BaritoneHelper.AVAILABLE ? "available" : "not installed")
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
 
         publish(AutomationEvent.Type.FLIGHT_STARTED, java.util.Map.of("elytra", ElytraManager.status()));
@@ -1313,7 +1313,7 @@ public class BaseHunterV2 extends Module {
                 .field("Targets visited", String.valueOf(targetsVisited))
                 .field("Elytra", ElytraManager.status())
                 .field("Duration", durationText())
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
 
         started = false;
@@ -1355,7 +1355,7 @@ public class BaseHunterV2 extends Module {
             .field("Stashes", String.valueOf(stashManager == null ? 0 : stashManager.forCurrentServer().size()))
             .field("Elytra", ElytraManager.status())
             .field("Duration", durationText())
-            .footer("Base Hunting Client"));
+            .footer("Baritone Anarchy Expansion"));
     }
 
     private void publish(AutomationEvent.Type type, java.util.Map<String, String> data) {

@@ -391,7 +391,7 @@ public class BaseHunter extends Module {
                 .field("Position", ServerUtils.coordinates())
                 .field("Server", ServerUtils.serverAddress())
                 .field("Distance flown", "%,d blocks".formatted((long) travelledBlocks))
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
     }
 
@@ -467,7 +467,7 @@ public class BaseHunter extends Module {
                 .field("Position", ServerUtils.coordinates())
                 .field("Server", ServerUtils.serverAddress())
                 .field("Dimension", ServerUtils.dimension())
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
 
         advanceToNextDestination(true);
@@ -568,7 +568,7 @@ public class BaseHunter extends Module {
                         .field("Elytra", ElytraManager.status())
                         .field("Position", ServerUtils.coordinates())
                         .field("Server", ServerUtils.serverAddress())
-                        .footer("Base Hunting Client"));
+                        .footer("Baritone Anarchy Expansion"));
                 }
             }
             stopAndMaybeDisconnect("Could not start flying");
@@ -644,7 +644,7 @@ public class BaseHunter extends Module {
                     (int) nearest.getX(), (int) nearest.getY(), (int) nearest.getZ()))
                 .field("Our position", ServerUtils.coordinates())
                 .field("Server", ServerUtils.serverAddress())
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
     }
 
@@ -705,7 +705,7 @@ public class BaseHunter extends Module {
             .field("Flown this run", "%,d blocks".formatted((long) travelledBlocks))
             .field("Fireworks", String.valueOf(countFireworks()))
             .field("New chunks found", String.valueOf(countNewChunks()))
-            .footer("Base Hunting Client"));
+            .footer("Baritone Anarchy Expansion"));
     }
 
     private int countFireworks() {
@@ -771,7 +771,7 @@ public class BaseHunter extends Module {
                 .field("Position", ServerUtils.coordinates())
                 .field("Server", ServerUtils.serverAddress())
                 .field("Flown this run", "%,d blocks".formatted((long) travelledBlocks))
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
 
         currentDestination = null;
