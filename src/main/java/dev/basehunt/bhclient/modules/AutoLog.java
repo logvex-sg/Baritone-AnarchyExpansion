@@ -242,7 +242,7 @@ public class AutoLog extends Module {
                 .field("Dimension", ServerUtils.dimension())
                 .field("Health", String.valueOf(mc.player.getHealth()))
                 .field("Logging out in", delayTicks.get() / 20.0 + "s")
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
     }
 
@@ -256,7 +256,7 @@ public class AutoLog extends Module {
                 .color(0xFF5555)
                 .field("Position", ServerUtils.coordinates())
                 .field("Server", ServerUtils.serverAddress())
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
         }
 
         if (chatFeedback.get()) info("Disconnecting.");

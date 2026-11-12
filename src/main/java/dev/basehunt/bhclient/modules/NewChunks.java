@@ -465,7 +465,7 @@ public class NewChunks extends Module {
             .field("Dimension", ServerUtils.dimension())
             .field("Signals", reasons.isBlank() ? "n/a" : reasons)
             .field("Player", ServerUtils.coordinates())
-            .footer("Base Hunting Client");
+            .footer("Baritone Anarchy Expansion");
     }
 
     public int getTrackedCount() {
@@ -540,7 +540,7 @@ public class NewChunks extends Module {
             .field("Server", ServerUtils.serverAddress())
             .field("Dimension", ServerUtils.dimension())
             .field("Spawn distance", String.valueOf(ServerUtils.spawnDistance(centerX, centerZ)))
-            .footer("Base Hunting Client"));
+            .footer("Baritone Anarchy Expansion"));
     }
 
     @EventHandler

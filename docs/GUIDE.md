@@ -1,4 +1,4 @@
-# Base Hunting Client — full guide
+# Baritone Anarchy Expansion — full guide
 
 This is the complete manual for the addon: what every module does, how the pieces fit together, how
 to configure them for an anarchy server, and how to read the data it stores. It documents release
@@ -55,8 +55,8 @@ and a set of automatic managers (elytra, mending, ender chest, survival).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add Baritone for Meteor. Only Base Hunter v1 needs it; everything else works without it.
-4. Drop `basehunting-2.5.0.jar` into `mods`.
-5. Launch the game and look for the **Base Hunting** category in Meteor's module list.
+4. Drop `baritone-anarchy-expansion-2.6.1.jar` into `mods`.
+5. Launch the game and look for the **Baritone Anarchy Expansion** category in Meteor's module list.
 
 Baritone is declared as a `recommends`, not a `depends`, so the addon loads whether or not it is
 present. Every Baritone call is compiled against it but guarded by a runtime availability check in
@@ -69,7 +69,7 @@ Baritone install.
 1. Enable `base-hunter-v2`. It will validate your elytra situation and refuse to start if you have no
    usable elytra at all.
 2. Open the management screen with `/bh gui` (or the module's settings) and press **Start V2**.
-3. Watch the **Base Hunting** HUD element for mode, target, elytra durability and flight state.
+3. Watch the **Baritone Anarchy Expansion** HUD element for mode, target, elytra durability and flight state.
 4. Enable `stash-finder`, `new-chunks` and `player-logger` so discoveries are recorded as you fly.
 5. Enable `webhook-notifier` and paste a Discord webhook URL if you want alerts.
 
@@ -78,7 +78,7 @@ Everything the addon does is also reachable from chat under `/basehunt` (alias `
 
 ## The modules
 
-All modules live under the **Base Hunting** category in Meteor's module list.
+All modules live under the **Baritone Anarchy Expansion** category in Meteor's module list.
 
 | Module | Default | Purpose |
 | --- | --- | --- |
@@ -370,7 +370,7 @@ the current server's records entirely.
 
 ### HUD
 
-The **Base Hunting** HUD element shows, with individual toggles for each line: server, position,
+The **Baritone Anarchy Expansion** HUD element shows, with individual toggles for each line: server, position,
 dimension, flight state, new-chunk count, stash count, player count, v1 destination and distance, v2
 mode/target/distance/queue, elytra status and spare count, mending status, firework count, free
 inventory slots, survival warning, explored/review chunk counts, current control ownership, storage
@@ -624,7 +624,7 @@ wired for it; they work on any server but assume 6b6t's syntax.
   players` lists them for the current server. The store is bounded and evicts the oldest, so a long
   session cannot grow the file without limit.
 
-Open the **6b6t menu** with `/bh 6b6t gui`, or the *Open 6b6t Menu* button in the Base Hunting screen.
+Open the **6b6t menu** with `/bh 6b6t gui`, or the *Open 6b6t Menu* button in the Baritone Anarchy Expansion screen.
 It gives each module a status line and its controls, and lists 6b6t's command catalogue (`/bh 6b6t
 commands` filters it). The terminal exposes the same tools under `sixbt …` and the enlarged `kit …`.
 
@@ -904,7 +904,7 @@ the addon. See the build notes in `AGENTS.md` about Xvfb and software GL.
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.5.0.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded

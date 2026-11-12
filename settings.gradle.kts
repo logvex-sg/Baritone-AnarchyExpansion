@@ -9,4 +9,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "basehunting"
+rootProject.name = "baritone-anarchy-expansion"

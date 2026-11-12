@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "id": "basehunting",
+  "id": "baritone-anarchy-expansion",
   "version": "${version}",
-  "name": "Base Hunting Client",
+  "name": "Baritone Anarchy Expansion",
   "description": "Anarchy base-hunting toolkit. Firework-free elytra autopilot with automatic elytra management, adaptive exploration, stash and new-chunk detection, player tracking, mending and ender chest handling, a safe storage system (inventory sorting, chest sorting, a container network, shulker work and restocking), survival guardrails and fully configurable Discord webhook notifications.",
   "authors": [
     "logvex-sg"
   ],
   "contact": {
-    "sources": "https://github.com/logvex-sg/basehuntingclient-baritone"
+    "sources": "https://github.com/logvex-sg/Baritone-AnarchyExpansion"
   },
-  "icon": "assets/basehunting/icon.png",
+  "icon": "assets/baritone-anarchy-expansion/icon.png",
   "environment": "client",
   "entrypoints": {
     "meteor": [

@@ -643,7 +643,7 @@ public class WebhookNotifier extends Module {
         WebhookManager.Embed embed = new WebhookManager.Embed()
             .title(title.get().isBlank() ? heading : title.get() + " " + heading)
             .color(color)
-            .footer("Base Hunting Client");
+            .footer("Baritone Anarchy Expansion");
 
         if (includeServer.get()) embed.field("Server", ServerUtils.serverAddress());
 

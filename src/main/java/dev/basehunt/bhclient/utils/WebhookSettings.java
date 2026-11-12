@@ -43,7 +43,7 @@ public class WebhookSettings {
         username = group.add(new StringSetting.Builder()
             .name("webhook-username")
             .description("Override the webhook display name.")
-            .defaultValue("Base Hunting Client")
+            .defaultValue("Baritone Anarchy Expansion")
             .visible(enabled::get)
             .build()
         );

@@ -263,7 +263,7 @@ public class PlayerLogger extends Module {
                 .field("Distance", entry.logoutDistanceTo((int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ()) + " blocks")
                 .field("Logged out", formatAge(entry.logoutTime))
                 .field("Our position", ServerUtils.coordinates())
-                .footer("Base Hunting Client"));
+                .footer("Baritone Anarchy Expansion"));
 
             if (chatFeedback.get()) {
                 warning("Near %s's logout spot (%s).", entry.name, entry.logoutCoords());
@@ -298,7 +298,7 @@ public class PlayerLogger extends Module {
             .field("Server", ServerUtils.serverAddress())
             .field("Dimension", entry.logoutDimension)
             .field("Sessions seen", String.valueOf(entry.sessionsSeen))
-            .footer("Base Hunting Client"));
+            .footer("Baritone Anarchy Expansion"));
     }
 
     private static String formatAge(long timestamp) {

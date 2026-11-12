@@ -441,7 +441,7 @@ public class StashFinder extends Module {
             .field("Spawn distance", String.valueOf(ServerUtils.spawnDistance(stash.pos.getX(), stash.pos.getZ())))
             .field("Contents", stash.describeCounts(), false)
             .field("Confidence", String.valueOf(stash.score()))
-            .footer("Base Hunting Client"));
+            .footer("Baritone Anarchy Expansion"));
     }
 
     private void refreshRenderList() {
