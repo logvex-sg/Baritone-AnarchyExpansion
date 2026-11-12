@@ -26,6 +26,8 @@ public final class KitDeliveryMachine {
         WAITING_ARRIVAL,
         /** The requester is in range; dropping the loadout. */
         DELIVERING,
+        /** The items are on the ground; holding position for a moment to confirm the hand-over. */
+        CONFIRMING,
         /** The kit is handed over; the bot should kill itself to reset. */
         FINISHED,
         /** The delivery could not complete (refused, timed out, cancelled). */
@@ -69,6 +71,7 @@ public final class KitDeliveryMachine {
     private String kitName = "";
     private int ticksInState;
     private int dropAttempts;
+    private int confirmTicks = 100;
 
     /** Begins a delivery for a request. Returns the actions to run immediately. */
     public List<Action> start(String requester, String kitName) {
@@ -123,9 +126,23 @@ public final class KitDeliveryMachine {
                     dropAttempts++;
                     return List.of(new Action.DropItem());
                 }
-                state = State.FINISHED;
-                return List.of(new Action.Report("delivered " + kitName + " to " + requester),
-                    new Action.KillSelf());
+                // Everything is on the ground. Hold position for the confirmation window so the items are
+                // actually handed over before the bot leaves or resets.
+                state = State.CONFIRMING;
+                ticksInState = 0;
+                return List.of(new Action.Report("dropped " + kitName + " for " + requester));
+            }
+            case CONFIRMING -> {
+                if (obs.requesterGone()) {
+                    state = State.FAILED;
+                    return List.of(new Action.Report(requester + " left before the kit was picked up"));
+                }
+                if (ticksInState >= confirmTicks) {
+                    state = State.FINISHED;
+                    return List.of(new Action.Report("delivered " + kitName + " to " + requester),
+                        new Action.KillSelf());
+                }
+                return List.of();
             }
             default -> {
                 return List.of();
@@ -154,7 +171,16 @@ public final class KitDeliveryMachine {
     }
 
     public boolean busy() {
-        return state == State.WAITING_ARRIVAL || state == State.DELIVERING;
+        return state == State.WAITING_ARRIVAL || state == State.DELIVERING || state == State.CONFIRMING;
+    }
+
+    /** How many ticks to hold position after dropping, so the items are confirmed handed over. */
+    public void setConfirmTicks(int ticks) {
+        this.confirmTicks = Math.max(0, ticks);
+    }
+
+    public int confirmTicks() {
+        return confirmTicks;
     }
 
     public String requester() {
@@ -175,6 +201,7 @@ public final class KitDeliveryMachine {
             case IDLE -> "idle";
             case WAITING_ARRIVAL -> "waiting for " + requester + " (" + ticksInState + " ticks)";
             case DELIVERING -> "delivering " + kitName + " to " + requester;
+            case CONFIRMING -> "confirming drop for " + requester;
             case FINISHED -> "delivered to " + requester;
             case FAILED -> "failed";
         };

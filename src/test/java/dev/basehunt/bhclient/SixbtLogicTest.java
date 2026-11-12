@@ -1,10 +1,14 @@
 package dev.basehunt.bhclient;
 
+import dev.basehunt.bhclient.core.sixbt.ChestKitSearch;
 import dev.basehunt.bhclient.core.sixbt.HomeBook;
 import dev.basehunt.bhclient.core.sixbt.HotspotInfo;
 import dev.basehunt.bhclient.core.sixbt.KitDeliveryMachine;
 import dev.basehunt.bhclient.core.sixbt.KitLoadout;
 import dev.basehunt.bhclient.core.sixbt.KitLoadoutRegistry;
+import dev.basehunt.bhclient.core.sixbt.KitMessages;
+import dev.basehunt.bhclient.core.sixbt.KitRequestFlow;
+import dev.basehunt.bhclient.core.sixbt.KitRequestPolicy;
 import dev.basehunt.bhclient.core.sixbt.KitRequestQueue;
 import dev.basehunt.bhclient.core.sixbt.KitRestockPlan;
 import dev.basehunt.bhclient.core.sixbt.SixbtChat;
@@ -48,6 +52,10 @@ public class SixbtLogicTest {
         tps();
         hotspot();
         tpaPolicy();
+        requestPolicy();
+        kitMessages();
+        requestFlow();
+        chestSearch();
         homeBook();
 
         System.out.println();
@@ -131,6 +139,27 @@ public class SixbtLogicTest {
             SixbtChat.findRequest("/kit pvp", prefixes, false, kits).isEmpty(), "found");
         check("plain chat is not a request",
             SixbtChat.findRequest("<Steve> hello", prefixes, false, kits).isEmpty(), "found");
+
+        // The default prefix is ">lxkit": ">lxkit pvp" (bare) or ">lxkit kit pvp".
+        List<String> lxkit = List.of(">lxkit");
+        Optional<SixbtChat.Request> bareLxkit =
+            SixbtChat.findRequest("<Steve> >lxkit pvp", lxkit, true, kits);
+        check(">lxkit bare request found", bareLxkit.isPresent(), "not found");
+        check(">lxkit bare kit", bareLxkit.isPresent() && bareLxkit.get().kit().equals("pvp"),
+            bareLxkit.toString());
+        check(">lxkit kit keyword",
+            SixbtChat.findRequest("<Steve> >lxkit kit travel", lxkit, false, kits).isPresent(), "not found");
+        check(">lxkit prefix implies kit so bare works with bare off",
+            SixbtChat.findRequest("<Steve> >lxkit pvp", lxkit, false, kits).isPresent(), "not found");
+        check(">lxkit unknown kit ignored",
+            SixbtChat.findRequest("<Steve> >lxkit diamond", lxkit, true, kits).isEmpty(), "found");
+        check(">lxkit with no kit ignored",
+            SixbtChat.findRequest("<Steve> >lxkit", lxkit, true, kits).isEmpty(), "found");
+        check(">lxkit command echo not a request",
+            SixbtChat.findRequest("<Steve> /lxkit pvp", lxkit, true, kits).isEmpty(), "found");
+        check(">lxkit totem request",
+            SixbtChat.findRequest("<Steve> >lxkit totem", List.of(">lxkit"), true,
+                List.of("pvp", "travel", "totem")).isPresent(), "not found");
     }
 
     // Delivery machine
@@ -163,9 +192,31 @@ public class SixbtLogicTest {
         machine.tick(new KitDeliveryMachine.Observation(false, false, false, 1, false));
         List<KitDeliveryMachine.Action> finish =
             machine.tick(new KitDeliveryMachine.Observation(false, false, false, 0, false));
-        boolean killed = finish.stream().anyMatch(a -> a instanceof KitDeliveryMachine.Action.KillSelf);
-        check("kills itself when empty", killed, finish.toString());
+        check("empty drops enter the confirm window",
+            machine.state() == KitDeliveryMachine.State.CONFIRMING, machine.state().name());
+        check("no kill during the confirm window",
+            finish.stream().noneMatch(a -> a instanceof KitDeliveryMachine.Action.KillSelf), finish.toString());
+
+        // Hold position for the confirmation window, then hand over and reset.
+        machine.setConfirmTicks(3);
+        boolean killed = false;
+        for (int i = 0; i < 5 && !killed; i++) {
+            List<KitDeliveryMachine.Action> actions =
+                machine.tick(new KitDeliveryMachine.Observation(false, false, false, 0, false));
+            killed = actions.stream().anyMatch(a -> a instanceof KitDeliveryMachine.Action.KillSelf);
+        }
+        check("kills itself after the confirm window", killed, "no kill");
         check("finished", machine.state() == KitDeliveryMachine.State.FINISHED, machine.state().name());
+
+        // A requester who leaves during the confirm window fails the delivery rather than silently succeeding.
+        KitDeliveryMachine leftDuringConfirm = new KitDeliveryMachine();
+        leftDuringConfirm.setConfirmTicks(100);
+        leftDuringConfirm.start("Steve", "pvp");
+        leftDuringConfirm.tick(new KitDeliveryMachine.Observation(true, false, false, 1, false));
+        leftDuringConfirm.tick(new KitDeliveryMachine.Observation(false, false, false, 0, false));
+        leftDuringConfirm.tick(new KitDeliveryMachine.Observation(false, false, false, 0, true));
+        check("requester gone during confirm fails",
+            leftDuringConfirm.state() == KitDeliveryMachine.State.FAILED, leftDuringConfirm.state().name());
 
         // Refusal path.
         KitDeliveryMachine refused = new KitDeliveryMachine();
@@ -330,7 +381,45 @@ public class SixbtLogicTest {
         check("non-hotspot line ignored", HotspotInfo.parse("hello world", "overworld", 0).isEmpty(), "parsed");
     }
 
-    // Tpa policy
+    // Request policy (whitelist)
+
+    private static void requestPolicy() {
+        section("kit request policy (whitelist)");
+
+        // Closed by default: nobody is served and nothing is blocked.
+        KitRequestPolicy closed = KitRequestPolicy.denyAll();
+        check("closed serves nobody", closed.servesNobody(), "serves someone");
+        check("closed ignores stranger",
+            closed.decide("Steve") == KitRequestPolicy.Decision.NOT_WHITELISTED, "allowed");
+        check("closed status", closed.statusLine().contains("closed"), closed.statusLine());
+
+        KitRequestPolicy policy =
+            new KitRequestPolicy(List.of("Steve", "Alex"), List.of("Griefer"), false);
+        check("whitelisted allowed", policy.decide("steve") == KitRequestPolicy.Decision.ALLOW, "not allowed");
+        check("whitelisted allowed (case)", policy.isAllowed("ALEX"), "not allowed");
+        check("blocked refused",
+            policy.decide("GRIEFER") == KitRequestPolicy.Decision.BLOCKED, "not blocked");
+        check("stranger not whitelisted",
+            policy.decide("Random") == KitRequestPolicy.Decision.NOT_WHITELISTED, "wrong decision");
+        check("null not whitelisted",
+            policy.decide(null) == KitRequestPolicy.Decision.NOT_WHITELISTED, "wrong decision");
+        check("blank not whitelisted",
+            policy.decide("  ") == KitRequestPolicy.Decision.NOT_WHITELISTED, "wrong decision");
+        check("not serves nobody", !policy.servesNobody(), "serves nobody");
+
+        // Block-list beats allow-anyone, so a griefer is shut out even on an open bot.
+        KitRequestPolicy open = new KitRequestPolicy(List.of(), List.of("Griefer"), true);
+        check("open allows stranger",
+            open.decide("Random") == KitRequestPolicy.Decision.ALLOW, "not allowed");
+        check("block-list beats allow-anyone",
+            open.decide("Griefer") == KitRequestPolicy.Decision.BLOCKED, "not blocked");
+        check("open serves somebody", !open.servesNobody(), "serves nobody");
+
+        // Blank entries are ignored rather than becoming a match on the empty name.
+        KitRequestPolicy blanks = new KitRequestPolicy(List.of("", "  ", "Steve"), List.of(), false);
+        check("blank allow entry ignored", blanks.decide("") != KitRequestPolicy.Decision.ALLOW, "allowed blank");
+        check("real entry kept", blanks.isAllowed("Steve"), "not allowed");
+    }
 
     private static void tpaPolicy() {
         section("tpa policy");
@@ -346,6 +435,177 @@ public class SixbtLogicTest {
 
         TpaPolicy deny = TpaPolicy.denyAll();
         check("deny all ignores", deny.decide("Steve") == TpaPolicy.Decision.IGNORE, "accepted");
+    }
+
+    // Kit messages
+
+    private static void kitMessages() {
+        section("kit messages");
+
+        KitMessages messages = new KitMessages();
+        check("grabbing default", messages.template(KitMessages.Kind.GRABBING).contains("Grabbing"),
+            messages.template(KitMessages.Kind.GRABBING));
+        check("not whitelisted default",
+            messages.template(KitMessages.Kind.NOT_WHITELISTED).contains("Not whitelisted"),
+            messages.template(KitMessages.Kind.NOT_WHITELISTED));
+        check("unknown kit default", messages.template(KitMessages.Kind.UNKNOWN_KIT).contains("doesnt exist"),
+            messages.template(KitMessages.Kind.UNKNOWN_KIT));
+        check("cooldown default", messages.template(KitMessages.Kind.COOLDOWN).contains("cooldown"),
+            messages.template(KitMessages.Kind.COOLDOWN));
+        check("queue full default", messages.template(KitMessages.Kind.QUEUE_FULL).contains("max"),
+            messages.template(KitMessages.Kind.QUEUE_FULL));
+        check("queued default", messages.template(KitMessages.Kind.QUEUED).contains("place"),
+            messages.template(KitMessages.Kind.QUEUED));
+        check("delivered default", messages.template(KitMessages.Kind.DELIVERED).contains("delivered"),
+            messages.template(KitMessages.Kind.DELIVERED));
+
+        check("whisper is a /msg", messages.whisper(KitMessages.Kind.DELIVERED, "Steve", Map.of())
+            .equals("/msg Steve Kit delivered."), messages.whisper(KitMessages.Kind.DELIVERED, "Steve", Map.of()));
+        check("whisper with no player is empty",
+            messages.whisper(KitMessages.Kind.DELIVERED, "", Map.of()).isEmpty(), "not empty");
+
+        check("cooldown renders minutes",
+            messages.render(KitMessages.Kind.COOLDOWN, Map.of("minutes", "10"))
+                .equals("Error, 10 minute cooldown active."),
+            messages.render(KitMessages.Kind.COOLDOWN, Map.of("minutes", "10")));
+        check("queue full renders max",
+            messages.render(KitMessages.Kind.QUEUE_FULL, Map.of("max", "3"))
+                .equals("Error, too many kits (max 3)."),
+            messages.render(KitMessages.Kind.QUEUE_FULL, Map.of("max", "3")));
+        check("queued renders place",
+            messages.render(KitMessages.Kind.QUEUED, Map.of("place", "2"))
+                .equals("You are in the queue, please wait. You are in place 2."),
+            messages.render(KitMessages.Kind.QUEUED, Map.of("place", "2")));
+        check("unknown placeholder left alone",
+            messages.render(KitMessages.Kind.DELIVERED, Map.of("nope", "x")).equals("Kit delivered."),
+            messages.render(KitMessages.Kind.DELIVERED, Map.of("nope", "x")));
+
+        // Overrides
+        KitMessages custom = KitMessages.fromLines(List.of(
+            "delivered:Enjoy your {kit}, {player}!",
+            "cooldown:wait {seconds}s"));
+        check("override delivered",
+            custom.render(KitMessages.Kind.DELIVERED, Map.of("kit", "totem", "player", "Steve"))
+                .equals("Enjoy your totem, Steve!"),
+            custom.render(KitMessages.Kind.DELIVERED, Map.of("kit", "totem", "player", "Steve")));
+        check("override cooldown", custom.template(KitMessages.Kind.COOLDOWN).equals("wait {seconds}s"),
+            custom.template(KitMessages.Kind.COOLDOWN));
+        check("untouched kind keeps default",
+            custom.template(KitMessages.Kind.GRABBING).equals(messages.template(KitMessages.Kind.GRABBING)),
+            custom.template(KitMessages.Kind.GRABBING));
+        check("blank line ignored", KitMessages.fromLines(List.of("", "  ", "notakind:x"))
+            .template(KitMessages.Kind.DELIVERED).equals("Kit delivered."), "changed");
+        check("parseKind case-insensitive", KitMessages.parseKind("DELIVERED") == KitMessages.Kind.DELIVERED,
+            "not parsed");
+        check("parseKind unknown is null", KitMessages.parseKind("bogus") == null, "parsed");
+        check("describe covers every kind", messages.describe().size() == KitMessages.Kind.values().length,
+            String.valueOf(messages.describe().size()));
+    }
+
+    // Request flow
+
+    private static void requestFlow() {
+        section("kit request flow");
+
+        KitRequestFlow.Reply denied = KitRequestFlow.evaluate(KitRequestPolicy.Decision.NOT_WHITELISTED,
+            true, null, 0, 0, 3);
+        check("stranger is told not whitelisted", denied.kind() == KitMessages.Kind.NOT_WHITELISTED,
+            denied.kind().toString());
+
+        KitRequestFlow.Reply blocked = KitRequestFlow.evaluate(KitRequestPolicy.Decision.BLOCKED,
+            true, null, 0, 0, 3);
+        check("blocked is told not whitelisted", blocked.kind() == KitMessages.Kind.NOT_WHITELISTED,
+            blocked.kind().toString());
+
+        KitRequestFlow.Reply unknown = KitRequestFlow.evaluate(KitRequestPolicy.Decision.ALLOW,
+            false, null, 0, 0, 3);
+        check("unknown kit reported", unknown.kind() == KitMessages.Kind.UNKNOWN_KIT, unknown.kind().toString());
+
+        KitRequestFlow.Reply full = KitRequestFlow.evaluate(KitRequestPolicy.Decision.ALLOW,
+            true, "full", 0, 0, 3);
+        check("full queue reported", full.kind() == KitMessages.Kind.QUEUE_FULL, full.kind().toString());
+        check("full carries max", full.vars().get("max").equals("3"), full.vars().toString());
+
+        KitRequestFlow.Reply cooldown = KitRequestFlow.evaluate(KitRequestPolicy.Decision.ALLOW,
+            true, "cooldown", 0, 42, 3);
+        check("cooldown reported", cooldown.kind() == KitMessages.Kind.COOLDOWN, cooldown.kind().toString());
+        check("cooldown rounds up to minutes", cooldown.vars().get("minutes").equals("1"),
+            cooldown.vars().toString());
+        KitRequestFlow.Reply longCooldown = KitRequestFlow.evaluate(KitRequestPolicy.Decision.ALLOW,
+            true, "cooldown", 0, 600, 3);
+        check("long cooldown is 10 minutes", longCooldown.vars().get("minutes").equals("10"),
+            longCooldown.vars().toString());
+
+        KitRequestFlow.Reply queued = KitRequestFlow.evaluate(KitRequestPolicy.Decision.ALLOW,
+            true, null, 2, 0, 3);
+        check("accepted is queued", queued.kind() == KitMessages.Kind.QUEUED, queued.kind().toString());
+        check("queued carries place", queued.vars().get("place").equals("2"), queued.vars().toString());
+
+        KitRequestFlow.Reply next = KitRequestFlow.evaluate(KitRequestPolicy.Decision.ALLOW,
+            true, null, 1, 0, 3);
+        check("next in line is told grabbing", next.kind() == KitMessages.Kind.GRABBING,
+            next.kind().toString());
+        KitRequestFlow.Reply first = KitRequestFlow.evaluate(KitRequestPolicy.Decision.ALLOW,
+            true, null, 0, 0, 3);
+        check("first in line is told grabbing", first.kind() == KitMessages.Kind.GRABBING,
+            first.kind().toString());
+
+        // A request from a stranger for a kit that does not exist: access wins, so nothing is leaked.
+        KitRequestFlow.Reply strangerBadKit = KitRequestFlow.evaluate(
+            KitRequestPolicy.Decision.NOT_WHITELISTED, false, null, 0, 0, 3);
+        check("access beats unknown kit", strangerBadKit.kind() == KitMessages.Kind.NOT_WHITELISTED,
+            strangerBadKit.kind().toString());
+
+        check("zero position becomes place 1", KitRequestFlow.queued(0).vars().get("place").equals("1"),
+            KitRequestFlow.queued(0).vars().toString());
+    }
+
+    // Chest kit search
+
+    private static void chestSearch() {
+        section("chest kit search");
+
+        KitLoadout totem = KitLoadout.of("totem", List.of(
+            new KitLoadout.ItemSpec("minecraft:totem_of_undying", 2),
+            new KitLoadout.ItemSpec("minecraft:golden_apple", 8)));
+
+        ChestKitSearch.Container chest = new ChestKitSearch.Container("chest", 10, 64, 20, List.of(
+            new KitLoadout.ItemSpec("minecraft:totem_of_undying", 2),
+            new KitLoadout.ItemSpec("minecraft:golden_apple", 8),
+            new KitLoadout.ItemSpec("minecraft:dirt", 64)));
+        ChestKitSearch.Container barrel = new ChestKitSearch.Container("barrel", 12, 64, 22, List.of(
+            new KitLoadout.ItemSpec("minecraft:totem_of_undying", 1)));
+
+        ChestKitSearch.Result complete = ChestKitSearch.find(List.of(barrel, chest), totem);
+        check("complete kit found", complete.complete(), complete.summary());
+        check("best container is the chest", complete.label().equals("chest"), complete.label());
+        check("coordinates kept", complete.coords().equals("10, 64, 20"), complete.coords());
+
+        ChestKitSearch.Result partial = ChestKitSearch.find(List.of(barrel), totem);
+        check("partial kit not complete", !partial.complete(), partial.summary());
+        check("partial found the totem", partial.hasSource(), "no source");
+        check("partial missing the apples", partial.missing().contains("minecraft:golden_apple x8"),
+            partial.missing().toString());
+        check("partial missing one totem", partial.missing().contains("minecraft:totem_of_undying"),
+            partial.missing().toString());
+
+        ChestKitSearch.Result none = ChestKitSearch.find(
+            List.of(new ChestKitSearch.Container("dirt", 0, 0, 0,
+                List.of(new KitLoadout.ItemSpec("minecraft:dirt", 64)))), totem);
+        check("no source found", !none.hasSource(), "found one");
+        check("none reports the shortfall", none.missing().size() == 2, none.missing().toString());
+
+        check("empty containers list", !ChestKitSearch.find(List.of(), totem).hasSource(), "found");
+        check("null loadout safe", !ChestKitSearch.find(List.of(chest), null).hasSource(), "found");
+        check("empty loadout safe", !ChestKitSearch.find(List.of(chest), KitLoadout.empty("x")).hasSource(),
+            "found");
+
+        check("countOf sums stacks", ChestKitSearch.countOf(chest.contents(), "minecraft:totem_of_undying") == 2,
+            String.valueOf(ChestKitSearch.countOf(chest.contents(), "minecraft:totem_of_undying")));
+        check("countOf unknown is zero", ChestKitSearch.countOf(chest.contents(), "minecraft:diamond") == 0,
+            "non-zero");
+        check("container label defaults", new ChestKitSearch.Container("", 0, 0, 0, List.of()).label()
+            .equals("container"), "not defaulted");
     }
 
     // Home book

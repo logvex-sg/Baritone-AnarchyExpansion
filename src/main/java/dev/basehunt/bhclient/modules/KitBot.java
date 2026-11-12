@@ -6,12 +6,17 @@ import dev.basehunt.bhclient.core.AutomationManager;
 import dev.basehunt.bhclient.core.kit.Kit;
 import dev.basehunt.bhclient.core.kit.KitRegistry;
 import dev.basehunt.bhclient.core.kit.KitResponses;
+import dev.basehunt.bhclient.core.sixbt.ChestKitSearch;
 import dev.basehunt.bhclient.core.sixbt.KitLoadout;
 import dev.basehunt.bhclient.core.sixbt.KitLoadoutRegistry;
+import dev.basehunt.bhclient.core.sixbt.KitMessages;
+import dev.basehunt.bhclient.core.sixbt.KitRequestFlow;
+import dev.basehunt.bhclient.core.sixbt.KitRequestPolicy;
 import dev.basehunt.bhclient.core.sixbt.KitRestockPlan;
 import dev.basehunt.bhclient.core.sixbt.SixbtChat;
 import dev.basehunt.bhclient.core.sixbt.TpaPolicy;
 import dev.basehunt.bhclient.systems.KitBotStore;
+import dev.basehunt.bhclient.systems.KitChestSource;
 import dev.basehunt.bhclient.systems.KitDeliveryService;
 import dev.basehunt.bhclient.systems.KitLoadoutStore;
 import dev.basehunt.bhclient.utils.ServerUtils;
@@ -118,15 +123,15 @@ public class KitBot extends Module {
 
     private final Setting<List<String>> requestPrefixes = sgDelivery.add(new StringListSetting.Builder()
         .name("request-prefixes")
-        .description("Chat prefixes that mark a kit request, e.g. ! so !kit pvp works.")
-        .defaultValue(List.of("!", ".kit"))
+        .description("Chat prefixes that mark a kit request, e.g. >lxkit so '>lxkit totem' works.")
+        .defaultValue(List.of(">lxkit"))
         .build()
     );
 
     private final Setting<Boolean> bareRequests = sgDelivery.add(new BoolSetting.Builder()
         .name("bare-requests")
-        .description("Also accept !<kit> with no 'kit' keyword, e.g. !pvp.")
-        .defaultValue(false)
+        .description("Accept '<prefix> <kit>' with no 'kit' keyword, e.g. >lxkit totem. Off needs '>lxkit kit totem'.")
+        .defaultValue(true)
         .build()
     );
 
@@ -142,9 +147,9 @@ public class KitBot extends Module {
     private final Setting<Integer> requestCooldown = sgDelivery.add(new IntSetting.Builder()
         .name("request-cooldown")
         .description("Seconds a player must wait before asking you again.")
-        .defaultValue(120)
+        .defaultValue(600)
         .min(0)
-        .sliderRange(0, 900)
+        .sliderRange(0, 3600)
         .build()
     );
 
@@ -160,9 +165,36 @@ public class KitBot extends Module {
     private final Setting<Integer> queueCapacity = sgDelivery.add(new IntSetting.Builder()
         .name("queue-capacity")
         .description("How many kit requests to hold at once.")
-        .defaultValue(8)
+        .defaultValue(3)
         .min(1)
         .sliderRange(1, 32)
+        .build()
+    );
+
+    private final Setting<Integer> confirmDelay = sgDelivery.add(new IntSetting.Builder()
+        .name("confirm-delay")
+        .description("Seconds to hold position after dropping, so the requester can pick the kit up.")
+        .defaultValue(5)
+        .min(0)
+        .sliderRange(0, 30)
+        .build()
+    );
+
+    private final Setting<List<String>> messageLines = sgDelivery.add(new StringListSetting.Builder()
+        .name("messages")
+        .description("Whisper replies as kind:text. Kinds: grabbing, not_whitelisted, unknown_kit, "
+            + "cooldown, queue_full, queued, delivered, failed. Placeholders: {player} {kit} {place} "
+            + "{minutes} {max}.")
+        .defaultValue(List.of(
+            "grabbing:Grabbing the kit, please wait.",
+            "not_whitelisted:Not whitelisted (contact logvex).",
+            "unknown_kit:Kit doesnt exist.",
+            "cooldown:Error, {minutes} minute cooldown active.",
+            "queue_full:Error, too many kits (max {max}).",
+            "queued:You are in the queue, please wait. You are in place {place}.",
+            "delivered:Kit delivered.",
+            "failed:Error, the delivery could not be completed."
+        ))
         .build()
     );
 
@@ -187,11 +219,44 @@ public class KitBot extends Module {
         .build()
     );
 
+    // Who may use the bot
+
+    private final Setting<List<String>> whitelist = sgDelivery.add(new StringListSetting.Builder()
+        .name("whitelist")
+        .description("Only these players may request a kit. Empty means nobody can (see allow-anyone).")
+        .defaultValue(List.of())
+        .build()
+    );
+
+    private final Setting<List<String>> blacklist = sgDelivery.add(new StringListSetting.Builder()
+        .name("blacklist")
+        .description("These players are never served, even when allow-anyone is on.")
+        .defaultValue(List.of())
+        .build()
+    );
+
+    private final Setting<Boolean> allowAnyone = sgDelivery.add(new BoolSetting.Builder()
+        .name("allow-anyone")
+        .description("Serve every requester, not just the whitelist. Only for a bot parked in a safe spot.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> chestRadius = sgDelivery.add(new IntSetting.Builder()
+        .name("chest-radius")
+        .description("How far to look for a registered container holding the kit, in blocks.")
+        .defaultValue(24)
+        .min(4)
+        .sliderRange(4, 96)
+        .build()
+    );
+
     private final KitRegistry registry = new KitRegistry();
     private final Map<String, Long> pendingClaims = new LinkedHashMap<>();
 
     private KitLoadoutRegistry loadouts = new KitLoadoutRegistry();
     private KitDeliveryService delivery;
+    private KitRequestPolicy requestPolicy = KitRequestPolicy.denyAll();
 
     private int joinCooldown;
     private int claimCooldown;
@@ -441,6 +506,9 @@ public class KitBot extends Module {
         });
         delivery.setArrivalRadius(arrivalRadius.get());
         delivery.setTpaTimeoutTicks(tpaTimeout.get() * 20);
+        delivery.setMessages(KitMessages.fromLines(messageLines.get()));
+        delivery.setConfirmTicks(confirmDelay.get() * 20);
+        requestPolicy = new KitRequestPolicy(whitelist.get(), blacklist.get(), allowAnyone.get());
     }
 
     private void tickDelivery() {
@@ -450,16 +518,51 @@ public class KitBot extends Module {
 
     /** Reads a chat line for a kit request and an incoming /tpa, when delivery is on. */
     private void handleDeliveryChat(String text) {
+        // Deliberately no kit filter: an unknown kit name still needs an answer ("Kit doesnt exist.").
         Optional<SixbtChat.Request> request = SixbtChat.findRequest(text, requestPrefixes.get(),
-            bareRequests.get(), loadouts.names());
+            bareRequests.get(), List.of());
         if (request.isPresent()) {
             SixbtChat.Request found = request.get();
             String self = ServerUtils.playerName();
-            if (!found.requester().equalsIgnoreCase(self)) {
-                String reason = delivery.offer(found.requester(), found.kit(), System.currentTimeMillis());
-                if (reason != null && chatFeedback.get()) {
-                    warning("Ignoring kit request from %s: %s.", found.requester(), reason);
+            if (found.requester().equalsIgnoreCase(self)) return;
+
+            long now = System.currentTimeMillis();
+            KitRequestPolicy.Decision decision = requestPolicy.decide(found.requester());
+            boolean kitExists = loadouts.contains(found.kit());
+            String refusal = decision == KitRequestPolicy.Decision.ALLOW && kitExists
+                ? delivery.wouldRefuse(found.requester(), now) : null;
+
+            KitRequestFlow.Reply reply = KitRequestFlow.evaluate(decision, kitExists, refusal,
+                delivery.positionOf(found.requester()), delivery.cooldownSecondsLeft(found.requester(), now),
+                queueCapacity.get());
+            // GRABBING is whispered by the delivery service when it actually starts the hand-over; sending
+            // it here too would double the message. Every other reply belongs here.
+            if (reply.kind() != KitMessages.Kind.GRABBING) whisper(reply, found.requester(), found.kit());
+
+            if (decision != KitRequestPolicy.Decision.ALLOW || !kitExists || refusal != null) {
+                if (chatFeedback.get()) {
+                    warning("Kit request from %s for %s ignored (%s).", found.requester(), found.kit(),
+                        decision != KitRequestPolicy.Decision.ALLOW ? "not whitelisted"
+                            : !kitExists ? "unknown kit" : refusal);
                 }
+                return;
+            }
+
+            // Accepted. Check storage holds the kit before teleporting anywhere.
+            KitLoadout loadout = loadouts.find(found.kit());
+            ChestKitSearch.Result source = KitChestSource.find(loadout, chestRadius.get());
+            if (!source.complete()) {
+                // Do not leave the requester hanging after "grabbing": tell them it failed.
+                whisper(KitRequestFlow.failed(), found.requester(), found.kit());
+                if (chatFeedback.get()) warning("Not stocked for %s: %s", found.kit(), source.summary());
+                publish(AutomationEvent.Type.KIT_RESTOCK_NEEDED,
+                    Map.of("kit", found.kit(), "detail", source.summary()));
+                return;
+            }
+
+            String reason = delivery.offer(found.requester(), found.kit(), now);
+            if (reason != null && chatFeedback.get()) {
+                warning("Ignoring kit request from %s: %s.", found.requester(), reason);
             }
             return;
         }
@@ -477,6 +580,16 @@ public class KitBot extends Module {
                 }
             });
         }
+    }
+
+    /** Sends one of the configurable whisper replies to a requester. */
+    private void whisper(KitRequestFlow.Reply reply, String requester, String kit) {
+        if (reply == null || delivery == null) return;
+        java.util.Map<String, String> vars = new java.util.LinkedHashMap<>(reply.vars());
+        vars.put("player", requester);
+        vars.put("kit", kit == null ? "" : kit);
+        String line = delivery.messages().whisper(reply.kind(), requester, vars);
+        if (!line.isEmpty()) sendLine(line);
     }
 
     // Public control surface (used by the terminal, the menu and the commands)
@@ -598,9 +711,155 @@ public class KitBot extends Module {
     public List<String> describeDelivery() {
         List<String> lines = new ArrayList<>();
         lines.add("delivery: " + (deliveryEnabled.get() ? "enabled" : "disabled"));
+        lines.add("access: " + requestPolicy.statusLine());
         if (delivery != null) lines.addAll(delivery.describe());
         lines.add("loadouts: " + String.join(", ", loadouts.names()));
         return lines;
+    }
+
+    // Access control (who may use the bot)
+
+    /** The current access policy, rebuilt from the settings on every delivery rebuild. */
+    public KitRequestPolicy requestPolicy() {
+        return requestPolicy;
+    }
+
+    /** A one-line summary of who may request kits. */
+    public String whitelistStatusLine() {
+        return requestPolicy.statusLine();
+    }
+
+    /** True when the named player would be served. */
+    public boolean isWhitelisted(String player) {
+        return requestPolicy.isAllowed(player);
+    }
+
+    /** Adds a player to the whitelist and rebuilds the policy. Returns a short result message. */
+    public String addToWhitelist(String player) {
+        if (player == null || player.isBlank()) return "no player name given";
+        String name = player.trim();
+        List<String> list = new ArrayList<>(whitelist.get());
+        if (list.stream().anyMatch(entry -> entry.equalsIgnoreCase(name))) {
+            return name + " is already whitelisted";
+        }
+        list.add(name);
+        whitelist.set(list);
+        requestPolicy = new KitRequestPolicy(whitelist.get(), blacklist.get(), allowAnyone.get());
+        return "whitelisted " + name;
+    }
+
+    /** Removes a player from the whitelist. Returns a short result message. */
+    public String removeFromWhitelist(String player) {
+        if (player == null || player.isBlank()) return "no player name given";
+        String name = player.trim();
+        List<String> list = new ArrayList<>(whitelist.get());
+        if (list.removeIf(entry -> entry.equalsIgnoreCase(name))) {
+            whitelist.set(list);
+            requestPolicy = new KitRequestPolicy(whitelist.get(), blacklist.get(), allowAnyone.get());
+            return "removed " + name + " from the whitelist";
+        }
+        return name + " is not whitelisted";
+    }
+
+    /** Blocks a player from ever being served. Returns a short result message. */
+    public String addToBlacklist(String player) {
+        if (player == null || player.isBlank()) return "no player name given";
+        String name = player.trim();
+        List<String> list = new ArrayList<>(blacklist.get());
+        if (list.stream().anyMatch(entry -> entry.equalsIgnoreCase(name))) {
+            return name + " is already blacklisted";
+        }
+        list.add(name);
+        blacklist.set(list);
+        requestPolicy = new KitRequestPolicy(whitelist.get(), blacklist.get(), allowAnyone.get());
+        return "blacklisted " + name;
+    }
+
+    /** Unblocks a player. Returns a short result message. */
+    public String removeFromBlacklist(String player) {
+        if (player == null || player.isBlank()) return "no player name given";
+        String name = player.trim();
+        List<String> list = new ArrayList<>(blacklist.get());
+        if (list.removeIf(entry -> entry.equalsIgnoreCase(name))) {
+            blacklist.set(list);
+            requestPolicy = new KitRequestPolicy(whitelist.get(), blacklist.get(), allowAnyone.get());
+            return "unblocked " + name;
+        }
+        return name + " is not blacklisted";
+    }
+
+    /** Whether the bot serves anyone who asks. */
+    public boolean isAllowAnyone() {
+        return allowAnyone.get();
+    }
+
+    /** Opens or closes the bot to everyone, and rebuilds the policy. */
+    public void setAllowAnyone(boolean value) {
+        allowAnyone.set(value);
+        requestPolicy = new KitRequestPolicy(whitelist.get(), blacklist.get(), allowAnyone.get());
+    }
+
+    /** Detailed access lines for the terminal and GUI. */
+    public List<String> describeAccess() {
+        List<String> lines = new ArrayList<>();
+        lines.add("access: " + requestPolicy.statusLine());
+        lines.add("whitelist: " + (whitelist.get().isEmpty() ? "(none)" : String.join(", ", whitelist.get())));
+        lines.add("blacklist: " + (blacklist.get().isEmpty() ? "(none)" : String.join(", ", blacklist.get())));
+        return lines;
+    }
+
+    // Messages and storage
+
+    /** The active whisper catalogue. */
+    public KitMessages messages() {
+        return delivery == null ? KitMessages.fromLines(messageLines.get()) : delivery.messages();
+    }
+
+    /** Overrides one whisper template and persists it in the setting. Returns a short result message. */
+    public String setMessage(String kindToken, String template) {
+        KitMessages.Kind kind = KitMessages.parseKind(kindToken);
+        if (kind == null) return "unknown message kind '" + kindToken + "'";
+        if (template == null || template.isBlank()) return "no text given";
+
+        String key = kind.name().toLowerCase(java.util.Locale.ROOT);
+        List<String> lines = new ArrayList<>();
+        boolean replaced = false;
+        for (String line : messageLines.get()) {
+            if (line != null && line.toLowerCase(java.util.Locale.ROOT).startsWith(key + ":")) {
+                lines.add(key + ":" + template.trim());
+                replaced = true;
+            } else {
+                lines.add(line);
+            }
+        }
+        if (!replaced) lines.add(key + ":" + template.trim());
+
+        messageLines.set(lines);
+        if (delivery != null) delivery.setMessages(KitMessages.fromLines(lines));
+        return key + " -> " + template.trim();
+    }
+
+    /** Every whisper as {@code kind:text} lines. */
+    public List<String> describeMessages() {
+        return messages().describe();
+    }
+
+    /** Finds which nearby registered container holds a kit, for the terminal and the GUI. */
+    public ChestKitSearch.Result findKitSource(String kit) {
+        KitLoadout loadout = loadouts.find(kit);
+        if (loadout == null) return new ChestKitSearch.Result(null, 0, 0, 0, 0, 0, List.of());
+        return KitChestSource.find(loadout, chestRadius.get());
+    }
+
+    /** A one-line report of where a kit is stored, or why it cannot be delivered. */
+    public String describeKitSource(String kit) {
+        if (!loadouts.contains(kit)) return "no loadout named '" + kit + "'";
+        return findKitSource(kit).summary();
+    }
+
+    /** The configured chest search radius. */
+    public int chestRadius() {
+        return chestRadius.get();
     }
 
     private void sendLine(String line) {

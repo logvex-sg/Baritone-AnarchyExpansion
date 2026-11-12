@@ -355,7 +355,10 @@ public class BaseHuntingHud extends HudElement {
             KitBot kits = Modules.get().get(KitBot.class);
             if (kits != null && kits.isActive()) {
                 lines.add("Kits: " + kits.statusLine());
-                if (kits.isDelivering()) lines.add("Kit delivery: " + kits.deliveryStatusLine());
+                if (kits.isDelivering()) {
+                    lines.add("Kit delivery: " + kits.deliveryStatusLine());
+                    lines.add("Kit access: " + kits.whitelistStatusLine());
+                }
             }
 
             // 6b6t server intelligence

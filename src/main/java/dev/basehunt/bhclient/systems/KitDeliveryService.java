@@ -3,6 +3,7 @@ package dev.basehunt.bhclient.systems;
 import dev.basehunt.bhclient.core.sixbt.KitDeliveryMachine;
 import dev.basehunt.bhclient.core.sixbt.KitLoadout;
 import dev.basehunt.bhclient.core.sixbt.KitLoadoutRegistry;
+import dev.basehunt.bhclient.core.sixbt.KitMessages;
 import dev.basehunt.bhclient.core.sixbt.KitRequestQueue;
 import dev.basehunt.bhclient.core.sixbt.KitRestockPlan;
 import dev.basehunt.bhclient.utils.ServerUtils;
@@ -60,10 +61,54 @@ public final class KitDeliveryService {
     private int requesterGoneTicks = 100;
     private int tpaTimeoutTicks = 600;
     private int missingTicks;
+    private KitMessages messages = new KitMessages();
+    private KitMessages.Kind lastMessage;
 
     public KitDeliveryService(int capacity, long cooldownMillis, Listener listener) {
         this.queue = new KitRequestQueue(capacity, cooldownMillis);
         this.listener = listener;
+    }
+
+    /** Replaces the whisper catalogue. */
+    public void setMessages(KitMessages messages) {
+        if (messages != null) this.messages = messages;
+    }
+
+    public KitMessages messages() {
+        return messages;
+    }
+
+    /** The last message kind the bot spoke, for the terminal and the menu. */
+    public KitMessages.Kind lastMessage() {
+        return lastMessage;
+    }
+
+    /** The queue's configured capacity and cooldown, for reporting the "max" and cooldown values. */
+    public int queueCapacity() {
+        return queue.capacity();
+    }
+
+    public long cooldownSeconds() {
+        return queue.cooldownMillis() / 1000;
+    }
+
+    /** The reason a requester would be refused without touching the queue, or null. */
+    public String wouldRefuse(String requester, long nowMillis) {
+        return queue.wouldRefuse(requester, nowMillis);
+    }
+
+    /** The 1-based queue position of a requester, or 0. */
+    public int positionOf(String requester) {
+        return queue.positionOf(requester);
+    }
+
+    /** Seconds left on a requester's cooldown, or 0. */
+    public long cooldownSecondsLeft(String requester, long nowMillis) {
+        return queue.cooldownSecondsLeft(requester, nowMillis);
+    }
+
+    public boolean isPending(String requester) {
+        return queue.isPending(requester);
     }
 
     public void setArrivalRadius(int blocks) {
@@ -77,6 +122,15 @@ public final class KitDeliveryService {
     /** How long to wait for a requester to accept the teleport before giving up. */
     public void setTpaTimeoutTicks(int ticks) {
         this.tpaTimeoutTicks = Math.max(100, ticks);
+    }
+
+    /** How many ticks to hold position after dropping, so the items are confirmed handed over. */
+    public void setConfirmTicks(int ticks) {
+        machine.setConfirmTicks(ticks);
+    }
+
+    public int confirmTicks() {
+        return machine.confirmTicks();
     }
 
     /** Accepts a request into the queue. Returns a refusal reason, or null when accepted. */
@@ -136,6 +190,8 @@ public final class KitDeliveryService {
             }
 
             queue.poll();
+            // Tell the requester we are on it before the teleport, so they know the request landed.
+            whisper(sender, KitMessages.Kind.GRABBING, next.requester(), next.kit(), Map.of());
             List<KitDeliveryMachine.Action> actions = machine.start(next.requester(), next.kit());
             if (listener != null) listener.onStarted(next.requester(), next.kit());
             run(mc, sender, loadouts, actions);
@@ -155,6 +211,19 @@ public final class KitDeliveryService {
         run(mc, sender, loadouts, actions);
     }
 
+    /** Sends a whisper to a requester using the message catalogue. */
+    private void whisper(ChatSender sender, KitMessages.Kind kind, String requester, String kit,
+                         Map<String, String> extra) {
+        if (sender == null || requester == null || requester.isBlank()) return;
+
+        Map<String, String> vars = new LinkedHashMap<>(extra);
+        vars.put("player", requester);
+        vars.put("kit", kit == null ? "" : kit);
+        lastMessage = kind;
+        String line = messages.whisper(kind, requester, vars);
+        if (!line.isEmpty()) sender.send(line);
+    }
+
     private void run(MinecraftClient mc, ChatSender sender, KitLoadoutRegistry loadouts,
                      List<KitDeliveryMachine.Action> actions) {
         for (KitDeliveryMachine.Action action : actions) {
@@ -165,13 +234,18 @@ public final class KitDeliveryService {
             } else if (action instanceof KitDeliveryMachine.Action.DropItem) {
                 dropOneLoadoutItem(mc, loadouts, machine.kitName());
             } else if (action instanceof KitDeliveryMachine.Action.KillSelf) {
+                // The kit is confirmed handed over: tell the requester, then reset the bot.
+                whisper(sender, KitMessages.Kind.DELIVERED, machine.requester(), machine.kitName(), Map.of());
                 if (sender != null) sender.send("/kill");
                 if (listener != null) listener.onFinished(machine.requester(), machine.kitName());
                 queue.served(machine.requester(), System.currentTimeMillis());
             } else if (action instanceof KitDeliveryMachine.Action.Report report) {
                 if (listener != null && report.reason().startsWith("delivered")) {
                     // Already reported through onFinished.
+                } else if (listener != null && report.reason().startsWith("dropped")) {
+                    // The drop is not a failure; the confirmation window follows.
                 } else if (listener != null) {
+                    whisper(sender, KitMessages.Kind.FAILED, machine.requester(), machine.kitName(), Map.of());
                     listener.onFailed(machine.requester(), report.reason());
                 }
             }
