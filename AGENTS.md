@@ -9,7 +9,7 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.7.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
@@ -22,9 +22,10 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 - `plannerTest` — `FlightPlanner` maths over packed chunk keys.
 - `coreLogicTest` — the pure-logic suite: elytra durability, the deployment state machine, flight-state
   classification, mending priorities, item classification, inventory planning, stash scoring, chunk
-  deduplication, persistence record recovery, target prioritisation, retry backoff (including the
+  deduplication, persistence record recovery and whole-database versioning, the cross-session
+  `JourneyPlan` snapshot, target prioritisation, retry backoff (including the
   bounded-deployment loop and the `DeploymentGovernor` regression), the exploration planner, survival
-  thresholds, the scheduler and the event bus. 196 assertions, no Minecraft classes, so it catches
+  thresholds, the scheduler and the event bus. 227 assertions, no Minecraft classes, so it catches
   arithmetic and state-machine regressions that would otherwise only appear mid-flight.
 - `storageLogicTest` — the storage suite: item classification, container layout, sort planning,
   simulated sort correctness, protection rules, deposit/withdraw/pull transfers, item routing, restock
@@ -110,6 +111,9 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              DeploymentGovernor (bounded deploy/recover policy for
 │   │                              FlightController), BoundedLongSet (size-capped chunk-key set),
 │   │                              SurvivalStatus, RecordCodec (tolerant NBT list decoding),
+│   │                              DatabaseVersion (whole-database format policy: current / legacy /
+│   │                              too-new, so a future export is refused not half-applied),
+│   │                              JourneyPlan (the unfinished route snapshot that survives a restart),
 │   │                              StorageCategory, ItemClassifier, ContainerLayout, SortPlanner,
 │   │                              InventorySimulator, TransferPlanner, RestockPlanner, ShulkerInventory,
 │   │                              ProtectionRules, ItemRoutingEngine, OperationState, WorkflowEngine,
@@ -339,6 +343,25 @@ the recovery and versioning behaviour headlessly. When you add a store, use `Rec
 hand-rolled loop, bump the store's `DB_VERSION` when its record shape changes, add it to
 `DatabaseIO.SECTIONS`, and update the pinned list in `hardeningTest` — the coverage test fails the build
 if the last two are out of step.
+
+**A whole-database export is checked against `DatabaseVersion` before it is applied.** Per-record
+tolerance does not help when the *shape* of a section changed: `DatabaseIO.importAll` reads the
+export's `formatVersion` (note: not the per-store `version` key `RecordCodec.readVersion` reads) and
+classifies it through `DatabaseVersion.verdict`. A `LEGACY` file is applied and reported as upgraded; a
+`TOO_NEW` file is **refused** — importing a format this build cannot fully read would silently drop the
+fields it introduced, which is worse than declining. The verdict is kept in `DatabaseIO.lastVerdict()`
+so `/bh database import` can say *why* it did nothing, and `/bh database version` shows it. Bump
+`DatabaseVersion.CURRENT` only when a whole-database section shape changes.
+
+**An unfinished route outlives the session that started it.** `BaseHunterV2` snapshots the target in
+flight and the pending queue into a `JourneyPlan` (via `ExplorationStore.journey`) on disconnect,
+dimension change and pause; `remember-route` gates it and `saveJourney` no-ops unless the route is
+`started`. A plan is stamped with the server address and dimension it was planned in and only restored
+when both still match, so a portal cannot send the player toward coordinates that mean nothing in the
+new world — save it with `saveJourneyFor(previous)` *before* `lastDimension` is overwritten. It is
+cleared when a route finishes (`stopAndMaybeDisconnect`) or is stopped on purpose (`stop`), so a stale
+route is never replayed; `restoreJourney` only re-queues coordinates, so the planner stays the single
+source of truth for what to fly to. `JourneyPlan` is pure NBT and capped at `MAX_PENDING` targets.
 
 **A listener that throws becomes a `SYSTEM_ERROR` event.** `AutomationBus.reportListenerFailure` catches
 the exception, logs it, and republishes a `SYSTEM_ERROR` event so the failure is visible without taking

@@ -329,6 +329,10 @@ When the current region stops producing discoveries (`expand-when-stalled` after
 the engine pushes a frontier waypoint outward (`frontier-step`) and continues, instead of sweeping the
 same dead area forever.
 
+A route also outlives the session that started it. See [Route memory across
+sessions](#route-memory-across-sessions): the pending queue and the target in flight are snapshotted on
+disconnect, dimension change and pause, then offered again next launch.
+
 ### Target prioritisation
 
 Every candidate target is scored and ranked. A revisit penalty demotes locations already discovered,
@@ -760,7 +764,7 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh events` | Show the most recent automation events |
 | `/bh start` | Enable and start Base Hunter V2 in adaptive mode |
 | `/bh stop` | Stop the autopilot, or cancel Baritone pathing |
-| `/bh pause` / `/bh resume` | Pause / resume the active route |
+| `/bh pause` / `/bh resume` | Pause / resume the active route. `resume` also restarts a route remembered from an earlier session |
 | `/bh fly <x> <z>` | Enable Base Hunter v1 and start a route to those coordinates |
 | `/bh baritone` / `status` / `terms` / `stop` | Baritone availability, version and flight state; accept its elytra terms; cancel pathing |
 
@@ -818,16 +822,20 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh route list` | List route waypoints |
 | `/bh route add` | Add your current position as a waypoint |
 | `/bh route add-at <x> <z>` | Add a specific position as a waypoint |
+| `/bh route remove <index>` | Remove one waypoint by its 1-based index |
 | `/bh route clear` | Remove all waypoints |
+| `/bh route saved` | Show the route remembered from an earlier session |
+| `/bh route forget` | Forget the remembered route |
 
 ### Database and webhooks
 
 | Command | What it does |
 | --- | --- |
-| `/bh database status` | Record counts and integrity (records skipped on load) |
+| `/bh database status` | Record counts, format version and integrity (records skipped on load) |
 | `/bh database export` | Export every store to a file |
-| `/bh database import` | Import an export file |
+| `/bh database import` | Import an export file (refuses a newer format) |
 | `/bh database copy` / `paste` | Export/import through the clipboard |
+| `/bh database version` | Show the database format version and the last import verdict |
 | `/bh webhook test` | Send a test message to the configured webhook |
 
 ### Automation, tasks, kits and chat
@@ -903,6 +911,29 @@ skipped, never fatal** — one bad entry cannot cost you the rest of the databas
 skipped on the last load is reported by `/bh database status` and in the management screen's Database
 section, and logged at startup. Meteor itself also writes a timestamped `.backup.nbt` if a whole file
 fails to parse.
+
+### Database format versions
+
+Each store carries a `version` key, and the whole-database export carries a `formatVersion` key
+(currently **v3**). The rules are:
+
+- a store written by an **older** build still loads — the decoder ignores fields it does not know and
+  fills the rest with defaults;
+- a whole-database file written by a **newer** build is **refused** on import rather than half-applied,
+  because importing a format we cannot fully read would silently drop the fields it introduced. The
+  refusal is reported in chat and logged; `/bh database version` shows the current format and the
+  verdict of the last import;
+- a file with no version header at all is treated as current, so a hand-made tag is not rejected.
+
+### Route memory across sessions
+
+Base Hunter V2 remembers the route it was flying when the game closed, the server changed or a portal
+was crossed. The target in flight and the targets still queued are saved with the server address and
+dimension they belong to, so a plan for the overworld is never offered after a portal. The next session
+can pick it up with `/bh resume` (or automatically when `auto-start` is on, since a saved route is
+resumed before a fresh sweep is started). The snapshot is capped at 256 targets and is cleared when a
+route finishes or is stopped on purpose, so a stale route is never replayed. `/bh route saved` shows it
+and `/bh route forget` discards it.
 
 In-memory growth is bounded: the chunk scanners cap their tracked-chunk sets (200k keys, oldest-first
 eviction) and the player tracker caps its per-server entries and sightings, so a very long session

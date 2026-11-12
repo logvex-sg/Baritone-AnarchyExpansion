@@ -12,7 +12,8 @@ Built for Minecraft 1.21.11 (Fabric). **Full manual: [docs/GUIDE.md](docs/GUIDE.
 - **Base Hunter V2** — the recommended autopilot. Flies itself by recasting the elytra, so a trip is
   limited only by elytra durability, not by rockets. Grid, spiral, adaptive, heading and custom-route
   exploration, terrain following, target prioritisation and a frontier push when the current region
-  goes quiet. Any durability of elytra works; spares are swapped in automatically.
+  goes quiet. Any durability of elytra works; spares are swapped in automatically. An unfinished route
+  is remembered across restarts, server changes and portals, and resumed where it left off.
 - **Base Hunter (v1)** — the original Baritone-powered elytra pathfinder, for when you already run
   Baritone and want point-to-point pathing with fireworks.
 - **Automatic elytra management** — equipping, deployment, redeployment after landing, recovery from a
@@ -62,7 +63,7 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `baritone-anarchy-expansion-2.6.1.jar` into `mods`.
+4. Drop `baritone-anarchy-expansion-2.7.0.jar` into `mods`.
 5. Launch the game and look for the **Baritone Anarchy Expansion** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
@@ -374,8 +375,14 @@ exploration (visited chunks + route waypoints), the storage registry, storage wo
 versioned and reads its records tolerantly, so a single corrupted record is skipped rather than losing
 the whole database — the skipped count is reported by `/bh database status`. `/bh database export`
 writes every store to one file; import applies each section it finds and never wipes a store whose
-section is missing. The section list is pinned by a headless test, so a newly added store cannot fall
-out of the export/import path unnoticed.
+section is missing. A whole-database export carries a `formatVersion`; a file written by a newer build
+is refused on import rather than half-applied, and an older one is upgraded and reported. The section
+list is pinned by a headless test, so a newly added store cannot fall out of the export/import path
+unnoticed.
+
+An unfinished Base Hunter V2 route is part of the exploration store: the target in flight and the
+pending queue are saved with the server and dimension they belong to, then offered again next session
+with `/bh resume` (or automatically when `auto-start` is on).
 
 Long sessions are bounded: the chunk scanners cap their tracked-chunk sets (oldest-first eviction) and
 the player tracker caps its per-server entries and sightings, so a multi-hour flight cannot grow the

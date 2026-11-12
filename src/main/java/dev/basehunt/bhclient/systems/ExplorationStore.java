@@ -23,6 +23,8 @@ public class ExplorationStore extends System<ExplorationStore> {
 
     private final ExploredRegions regions = new ExploredRegions();
     private final List<Waypoint> customWaypoints = new ArrayList<>();
+    /** The last flight route left unfinished, so a restart can pick it up. Null until one is saved. */
+    private dev.basehunt.bhclient.core.logic.JourneyPlan journey;
     private int lastSkippedRecords;
     private int lastLoadedVersion = DB_VERSION;
 
@@ -69,6 +71,26 @@ public class ExplorationStore extends System<ExplorationStore> {
         regions.markExplored(pos.getX() >> 4, pos.getZ() >> 4);
     }
 
+    // Journey memory
+
+    /** The last saved route, or null when there is none. */
+    public dev.basehunt.bhclient.core.logic.JourneyPlan journey() {
+        return journey;
+    }
+
+    /** Replaces the saved route and persists it. Pass an empty plan to forget the route. */
+    public void setJourney(dev.basehunt.bhclient.core.logic.JourneyPlan plan) {
+        this.journey = plan == null || plan.isEmpty() ? null : plan;
+        save();
+    }
+
+    /** Drops the saved route. */
+    public void clearJourney() {
+        if (journey == null) return;
+        journey = null;
+        save();
+    }
+
     @Override
     public NbtCompound toTag() {
         NbtCompound tag = new NbtCompound();
@@ -88,6 +110,8 @@ public class ExplorationStore extends System<ExplorationStore> {
         NbtList waypoints = new NbtList();
         for (Waypoint waypoint : customWaypoints) waypoints.add(waypoint.toTag());
         tag.put("waypoints", waypoints);
+
+        if (journey != null) tag.put("journey", journey.toTag());
 
         return tag;
     }
@@ -113,6 +137,12 @@ public class ExplorationStore extends System<ExplorationStore> {
         // of the store loading.
         var decoded = dev.basehunt.bhclient.core.logic.RecordCodec.decodeList(tag, "waypoints", Waypoint::fromTag);
         customWaypoints.addAll(decoded.records());
+
+        // The saved route is a single compound; a malformed one is dropped rather than failing the whole load.
+        journey = tag.contains("journey")
+            ? dev.basehunt.bhclient.core.logic.JourneyPlan.fromTag(tag.getCompoundOrEmpty("journey"))
+            : null;
+        if (journey != null && journey.isEmpty()) journey = null;
 
         lastSkippedRecords = decoded.skipped();
         lastLoadedVersion = dev.basehunt.bhclient.core.logic.RecordCodec.readVersion(tag, DB_VERSION);

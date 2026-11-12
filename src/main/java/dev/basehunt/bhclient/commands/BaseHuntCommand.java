@@ -115,8 +115,26 @@ public class BaseHuntCommand extends Command {
 
         builder.then(literal("resume").executes(context -> {
             BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
-            if (hunter != null && hunter.isStarted()) hunter.resume();
-            else info("Nothing to resume.");
+            if (hunter == null) {
+                info("Base Hunter V2 is unavailable.");
+                return SINGLE_SUCCESS;
+            }
+
+            if (hunter.isStarted()) {
+                hunter.resume();
+                return SINGLE_SUCCESS;
+            }
+
+            // Nothing is flying, but a route saved by a previous session may be waiting. Offer to pick it up
+            // rather than telling the user there is nothing to resume.
+            if (!hunter.savedJourneySummary().equals("no saved route")) {
+                if (!hunter.isActive()) hunter.enable();
+                if (hunter.startRestoring()) info("Resumed the saved route.");
+                else info("A saved route exists but could not be started: %s", hunter.savedJourneySummary());
+                return SINGLE_SUCCESS;
+            }
+
+            info("Nothing to resume.");
             return SINGLE_SUCCESS;
         }));
 
@@ -732,6 +750,30 @@ public class BaseHuntCommand extends Command {
                 info("Route waypoints cleared.");
                 return SINGLE_SUCCESS;
             }))
+            .then(literal("remove")
+                .then(argument("index", integer(1))
+                    .executes(context -> {
+                        ExplorationStore store = ExplorationStore.get();
+                        if (store == null) return SINGLE_SUCCESS;
+
+                        int index = getInteger(context, "index") - 1;
+                        if (store.removeWaypoint(index)) info("Removed route waypoint %d.", index + 1);
+                        else error("No waypoint at index %d.", index + 1);
+                        return SINGLE_SUCCESS;
+                    })
+                )
+            )
+            .then(literal("saved").executes(context -> {
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                info("Saved route: %s", hunter == null ? "unavailable" : hunter.savedJourneySummary());
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("forget").executes(context -> {
+                BaseHunterV2 hunter = Modules.get().get(BaseHunterV2.class);
+                if (hunter != null) hunter.clearJourney();
+                info("Saved route forgotten.");
+                return SINGLE_SUCCESS;
+            }))
         );
 
         // The original v1 waypoint commands are kept so existing muscle memory still works.
@@ -770,8 +812,7 @@ public class BaseHuntCommand extends Command {
             }))
             .then(literal("import").executes(context -> {
                 int applied = DatabaseIO.importFromFile();
-                if (applied == 0) error("Nothing imported. Is there an export file?");
-                else info("Imported %d section(s).", applied);
+                reportImport(applied);
                 return SINGLE_SUCCESS;
             }))
             .then(literal("copy").executes(context -> {
@@ -781,11 +822,41 @@ public class BaseHuntCommand extends Command {
             }))
             .then(literal("paste").executes(context -> {
                 int applied = DatabaseIO.importFromClipboard();
-                if (applied == 0) error("Nothing imported from the clipboard.");
-                else info("Imported %d section(s).", applied);
+                reportImport(applied);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("version").executes(context -> {
+                info("Database format: v%d.", dev.basehunt.bhclient.core.logic.DatabaseVersion.CURRENT);
+                info("Last import: %s.", switch (DatabaseIO.lastVerdict()) {
+                    case CURRENT -> "none, or already current";
+                    case LEGACY -> "an older format, upgraded on import";
+                    case TOO_NEW -> "refused (file is newer than this build)";
+                });
                 return SINGLE_SUCCESS;
             }))
         );
+    }
+
+    /**
+     * Reports an import outcome, distinguishing a refusal from an empty or partial file so the user is never
+     * told "nothing imported" when the real reason is that the file is too new to read safely.
+     */
+    private void reportImport(int applied) {
+        if (DatabaseIO.lastVerdict() == dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict.TOO_NEW) {
+            error("Import refused: the file was written by a newer build. Update the addon to read it.");
+            return;
+        }
+
+        if (applied == 0) {
+            error("Nothing imported. Is there an export file?");
+            return;
+        }
+
+        if (DatabaseIO.lastVerdict() == dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict.LEGACY) {
+            info("Imported %d section(s) from an older database format and upgraded them.", applied);
+        } else {
+            info("Imported %d section(s).", applied);
+        }
     }
 
     private void buildWebhook(LiteralArgumentBuilder<CommandSource> builder) {
@@ -1986,6 +2057,7 @@ public class BaseHuntCommand extends Command {
         info("Sightings: %,d", players == null ? 0 : players.allSightings().size());
         info("Ender chests: %,d on this server", chests == null ? 0 : chests.forCurrentServer().size());
         info("Explored chunks: %,d", exploration == null ? 0 : exploration.regions().exploredCount());
+        info("Format version: v%d", dev.basehunt.bhclient.core.logic.DatabaseVersion.CURRENT);
         info("Export file: %s", DatabaseIO.exportFileExists() ? DatabaseIO.exportFile().getName() : "none");
 
         // A skipped count above zero means the file was partly corrupt and those records were dropped, which

@@ -5,6 +5,12 @@ Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](h
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-11-12
+
+The persistence release. Alongside the kit-bot delivery fixes, two things the addon promised but did
+not actually do are now real: an imported database is checked against the format this build
+understands, and a route survives the session that started it.
+
 ### Fixed
 
 - **The kit bot no longer abandons every delivery seconds after it starts.** A delivery begins with a
@@ -30,10 +36,30 @@ Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](h
   per-kit readiness line. This turns the commonest "the bot does not react" causes into one command.
 - All kit-bot replies are whispered with `/msg <player> …` and never posted in public chat; the menu now
   states this and `doctor` reports it.
+- **The route survives a restart.** Base Hunter V2's pending queue and the target in flight were held in
+  memory only, so quitting the game, switching server or crossing a portal mid-flight threw the route
+  away and everything had to be set up again by hand. The route is now snapshotted on disconnect,
+  dimension change and pause (`BaseHunterV2 → remember-route`, on by default), saved with the server
+  address and dimension it belongs to, and restored with `/bh resume` — or automatically at launch when
+  `auto-start` is on, since a saved route is resumed before a fresh sweep is started. The snapshot is
+  capped at 256 targets and cleared when a route finishes or is stopped on purpose, so a stale route is
+  never replayed. The new `JourneyPlan` value is pure NBT and covered headlessly; `/bh route saved` shows
+  it and `/bh route forget` discards it.
+- **Importing a database written by a newer build is refused instead of half-applied.** `formatVersion`
+  was written on export but never checked on import, so a file from a later build was read with whatever
+  this build happened to understand, silently dropping the fields it introduced. `DatabaseVersion` now
+  classifies a whole-database tag as current, legacy (older — still readable, reported as upgraded) or
+  too-new (refused, with a chat message and a log line). A file with no version header is treated as
+  current, so a hand-made tag still imports. `/bh database version` reports the current format and the
+  last import verdict; `/bh database status` now prints the format version too.
+- **`/bh route remove <index>`** removes one waypoint by its 1-based index, matching the order `/bh route
+  list` prints. Previously the only way to drop a single waypoint was to clear them all.
 
 ### Documentation
 
 - `docs/GUIDE.md` documents the `/bh kit doctor` self-check and the whisper-only replies.
+- `docs/GUIDE.md` documents the database format versions, the cross-session route memory, and the new
+  `/bh route remove`, `/bh route saved`, `/bh route forget` and `/bh database version` commands.
 
 - **The kit bot now reacts to a kit stocked as a renamed shulker box.** The common 6b6t setup — a
   shulker box renamed after the kit (a box called `totem` for `>lxkit totem`) — was not recognised: the
