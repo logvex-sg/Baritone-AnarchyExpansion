@@ -5,6 +5,7 @@ import dev.basehunt.bhclient.modules.AutomationBrain;
 import dev.basehunt.bhclient.modules.BaseHunter;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.ChestSorter;
+import dev.basehunt.bhclient.modules.CommandTerminal;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
 import dev.basehunt.bhclient.modules.KitBot;
@@ -22,6 +23,7 @@ import dev.basehunt.bhclient.core.AutomationEvent;
 import dev.basehunt.bhclient.core.AutomationManager;
 import dev.basehunt.bhclient.core.logic.SurvivalStatus;
 import dev.basehunt.bhclient.core.task.Task;
+import dev.basehunt.bhclient.core.terminal.TerminalBuffer;
 import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.systems.ContainerInteractionManager;
 import dev.basehunt.bhclient.systems.DatabaseIO;
@@ -38,6 +40,7 @@ import meteordevelopment.meteorclient.gui.GuiThemes;
 import meteordevelopment.meteorclient.gui.WidgetScreen;
 import meteordevelopment.meteorclient.gui.WindowScreen;
 import meteordevelopment.meteorclient.gui.widgets.containers.WTable;
+import meteordevelopment.meteorclient.gui.widgets.containers.WView;
 import meteordevelopment.meteorclient.gui.widgets.input.WTextBox;
 import meteordevelopment.meteorclient.gui.widgets.pressable.WButton;
 import meteordevelopment.meteorclient.systems.modules.Module;
@@ -84,6 +87,8 @@ public class BaseHuntingScreen extends WindowScreen {
         survivalSection();
         notificationSection();
         databaseSection();
+        sixbtSection();
+        terminalSection();
     }
 
     // Sections
@@ -634,6 +639,86 @@ public class BaseHuntingScreen extends WindowScreen {
     }
 
     // Helpers
+
+    private void terminalSection() {
+        add(theme.section("Terminal")).expandX().widget();
+
+        CommandTerminal terminal = Modules.get().get(CommandTerminal.class);
+        if (terminal == null) {
+            add(theme.label("The command terminal module is not loaded."));
+            return;
+        }
+
+        add(theme.label("Type a command and press Enter. Tab completes; Up/Down walk the history."));
+        add(theme.label("Aliases: " + (terminal.aliases().isEmpty() ? "none"
+            : String.join(", ", terminal.aliases().all().keySet()))));
+
+        // Scrollable output. The buffer holds the real lines; a widget is rebuilt from it each time.
+        WView output = add(theme.view()).expandX().widget();
+        output.maxHeight = 200;
+        output.scrollOnlyWhenMouseOver = true;
+
+        List<TerminalBuffer.Line> lines = terminal.buffer().lines();
+        int from = Math.max(0, lines.size() - 24);
+        for (int i = from; i < lines.size(); i++) {
+            TerminalBuffer.Line line = lines.get(i);
+            String prefix = terminal.showTimestamps() ? timePrefix(line.timestamp()) : "";
+            output.add(theme.label(prefix + line.text())).expandX();
+        }
+        if (lines.isEmpty()) output.add(theme.label("(no output yet - try 'help' or 'status')")).expandX();
+
+        // Input row. The renderer routes Tab completion to the terminal's registry.
+        TerminalRenderer.completionSource = terminal::suggest;
+        WTextBox input = add(theme.textBox("type a command...", (text, c) -> true, TerminalRenderer.class))
+            .expandX().widget();
+        input.action = () -> {
+            String command = input.get().trim();
+            if (command.isEmpty()) return;
+            terminal.execute(command);
+            input.set("");
+            reload();
+        };
+
+        var actions = add(theme.horizontalList()).expandX().widget();
+
+        WButton help = actions.add(theme.button("Help")).expandX().widget();
+        help.action = () -> {
+            terminal.execute("help");
+            reload();
+        };
+
+        WButton status = actions.add(theme.button("Status")).expandX().widget();
+        status.action = () -> {
+            terminal.execute("status");
+            reload();
+        };
+
+        WButton clear = actions.add(theme.button("Clear")).expandX().widget();
+        clear.action = () -> {
+            terminal.buffer().clear();
+            reload();
+        };
+
+        WButton terminalSettings = actions.add(theme.button("Settings")).expandX().widget();
+        terminalSettings.action = () -> openModule(CommandTerminal.class);
+    }
+
+    private static String timePrefix(long timestamp) {
+        long seconds = Math.max(0, (System.currentTimeMillis() - timestamp) / 1000L);
+        return "[%02d:%02d] ".formatted(seconds / 60, seconds % 60);
+    }
+
+    private void sixbtSection() {
+        add(theme.section("6b6t")).expandX().widget();
+
+        KitBot kitBot = Modules.get().get(KitBot.class);
+        add(theme.label("Kit delivery: " + (kitBot == null ? "module not loaded" : kitBot.deliveryStatusLine())));
+
+        var actions = add(theme.horizontalList()).expandX().widget();
+
+        WButton open = actions.add(theme.button("Open 6b6t Menu")).expandX().widget();
+        open.action = () -> taskAfterRender = () -> SixbtMenuScreen.open(theme);
+    }
 
     private void infoLine(String message) {
         add(theme.label(message)).expandX();

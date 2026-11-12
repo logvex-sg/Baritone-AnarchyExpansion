@@ -62,7 +62,7 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `basehunting-2.3.0.jar` into `mods`.
+4. Drop `basehunting-2.5.0.jar` into `mods`.
 5. Launch the game and look for the **Base Hunting** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
@@ -114,6 +114,9 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh withdraw <item> [amount]` / `deposit <item> [amount]` | Exact-quantity transfer, as a queued task |
 | `/bh kit status` / `list` / `claim <name>` / `all` | Server kit status and claiming |
 | `/bh chat run <line>` | Run a chat command line as if you had typed it |
+| `/bh terminal` | Open the management screen, whose Terminal section is at the bottom |
+| `/bh terminal run <line>` | Run one terminal command and echo its output to chat |
+| `/bh terminal help` | List every terminal command |
 
 ## Webhook setup
 
@@ -160,13 +163,19 @@ All under the **Base Hunting** category in Meteor's module list.
 | `storage-monitor` | off | Runs storage workflows and reports storage status |
 | `automation-brain` | off | Reacts to events/facts and queues automation tasks |
 | `chat-commands` | off | Runs addon commands typed in chat behind a prefix |
-| `kit-bot` | off | Claims server kits and tracks their cooldowns |
+| `kit-bot` | off | Claims server kits and tracks their cooldowns; optional 6b6t kit-maker delivery role |
 | `auto-storage` | off | Exact-quantity withdrawals, deposits and restocks as tasks |
+| `command-terminal` | off | In-game command terminal over every manager, with Tab completion and history |
+| `6b6t-homes` | off | Tracks 6b6t homes and warns before the home limit is reached |
+| `6b6t-tpa` | off | Sends, cancels and auto-answers 6b6t teleport requests |
+| `6b6t-tps` | off | Polls 6b6t's `/tps` and warns when the server or your link is lagging |
+| `6b6t-hotspot` | off | Tracks the current 6b6t Hotspot and can teleport you to it |
+| `6b6t-players` | off | Records 6b6t player sightings with a searchable per-server history |
 
 There is also a **Base Hunting** HUD element with individual toggles for server, position, dimension,
 flight state, new-chunk/stash/player counts, autopilot target and distance, elytra durability, mending
 status, fireworks, free slots, survival warning, exploration progress, control ownership, the active
-automation task and the kit status.
+automation task, the kit status and the 6b6t lines (server TPS, hotspot, homes and player count).
 
 ## Configuration notes
 
@@ -255,12 +264,69 @@ are refused unless you list them under `allowed-destructive` or turn on `allow-a
 
 The same commands are reachable from `/bh chat run <line>` and from `/bh` directly.
 
+## Terminal
+
+Enable `command-terminal` and open `/bh gui`; the Terminal section sits at the bottom of the screen.
+It is a real command line over the same managers the GUI and `/bh` use, so nothing it can do is a
+special case. Type a line and press Enter, press Tab to complete a command, subcommand or argument,
+and press Up/Down to walk the history.
+
+The command set is grouped:
+
+```
+help [command]          status                    modules [list|search|enable|disable]
+tasks [list|stop|clear] storage [list|search|withdraw|deposit|register|goto|restock]
+navigate <x> <y> <z>    baritone [status|stop]    kit [list|status|claim <name>]
+elytra [status|replace] echest [status|open|organise|goto]   player [list|search <q>]
+stash [list|nearby|search <q>]   route [list|add|clear|start|stop]
+explore [grid|spiral|adaptive|heading|custom|stop|status]
+chat [status|prefixes|commands|run <line>]   config [list|get|set]
+database [status|export|import]   history [clear]   macro [list|run <name>]   clear   gui
+```
+
+Shortcuts are configurable in the module's `aliases` setting (`s=status`, `w=withdraw`, …). Each
+command declares its own permission level, and a subcommand can be stricter than its parent — so
+`storage list` is read-only while `storage withdraw` is not. Commands that change things ask for a
+second Enter before they run. The terminal only ever sees input you type; chat messages from other
+players never reach it. `/bh terminal run <line>` runs one command from chat and echoes the output.
+
+Macros are named command sequences, written in the module's `macros` setting as
+`name = step ; step ; step` (for example `preflight = elytra status ; storage restock ; survival
+status`). `macro list` shows them and `macro run <name>` replays one; every step goes through the same
+registry, so permissions and confirmation still apply and a macro can never do more than typing the
+steps by hand.
+
 ## Kits
 
 Enable `kit-bot` and define your kits in `kit-lines` as `name:command:cooldown` (for example
 `travel:/kit travel:3600`). `/bh kit list` shows each kit and its remaining cooldown; `/bh kit claim
 <name>` claims one, `/bh kit all` claims every ready kit. A server-side cooldown reply is adopted, so
 the client stops trying instead of spamming a claim the server will reject.
+
+The same module can act as a **6b6t kit maker**. On 6b6t, kits are handed out by players rather than by
+the server: someone types `!kit pvp` in chat, a delivery bot teleports to them, hands over the items and
+kills itself to reset. Turn on `kit-bot → delivery-enabled` to be that bot. The delivery role is off by
+default because it teleports you to strangers and then kills you. Configure the kits it can deliver as
+**loadouts** (`/bh kit loadout add pvp diamond_sword 1`), and it will refuse to deliver a loadout you are
+not carrying unless `require-stock` is off. `/bh kit delivery` shows the queue and the state machine.
+
+## 6b6t server tools
+
+The addon ships five modules for [6b6t](https://www.6b6t.org/en), a no-rules anarchy server whose command
+set (`/home`, `/tpa`, `/tps`, `/hotspot`, `/kill`, `/gc`) differs from vanilla. They are useful on any
+server but are wired for 6b6t's syntax.
+
+| Module | What it does |
+| --- | --- |
+| `6b6t-homes` | Keeps a book of your homes, warns before the server's home limit, and sets/visits/deletes them (`/bh 6b6t home set base`). The server never reports the limit, so set `home-limit` to match your rank. |
+| `6b6t-tpa` | Sends (`/bh 6b6t tpa send Steve`), cancels and auto-answers teleport requests. Auto-answer is allow-list based so a stranger cannot yank you across the map. |
+| `6b6t-tps` | Polls `/tps` and warns when the server drops below a threshold. It reports server *and* personal TPS, because a healthy server with a bad personal TPS means your link is the problem. |
+| `6b6t-hotspot` | Tracks the current Hotspot (`/hotspot`), notifies once when one goes live, and can teleport you in. On an anarchy server a Hotspot is a fight, so `auto-join` is off by default. |
+| `6b6t-players` | Records every player seen, where and when, with a searchable per-server history (`/bh 6b6t players`). It is bounded and evicting, so a long session cannot grow the file without limit. |
+
+Everything is also reachable from the **6b6t menu**: `/bh 6b6t gui`, or the *Open 6b6t Menu* button in
+the Base Hunting screen. The menu lists the server's command catalogue and gives each module a status
+line and its controls. The terminal exposes the same tools as `sixbt status|home|tpa|tps|hotspot|players|server|gui`.
 
 ## Storage and inventory
 
@@ -306,14 +372,14 @@ process or the saved file without limit.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md). The current release is **2.3.0** — the stability-hardening release.
+See [CHANGELOG.md](CHANGELOG.md). The current release is **2.5.0** — the 6b6t release.
 
 ## Building from source
 
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.3.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.5.0.jar
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
@@ -332,6 +398,8 @@ src/main/java/dev/basehunt/bhclient/
 ├── core/                        shared runtime coordination
 │   ├── AutomationManager / AutomationBus / AutomationEvent
 │   ├── TaskScheduler / Priority / ControlResource / Lease
+│   ├── chat/                     chat prefix commands (parsed from local chat only)
+│   ├── terminal/                 in-game command terminal (parser, registry, history, aliases)
 │   └── logic/                   pure, headlessly testable decision logic
 │       ├── DeploymentGovernor   bounded deploy/recover policy (FlightController)
 │       ├── BoundedLongSet       size-capped packed-chunk-key set
@@ -347,6 +415,7 @@ src/test/java/dev/basehunt/bhclient/
 ├── PlannerTest.java             FlightPlanner maths, no display needed
 ├── CoreLogicTest.java           pure-logic suite (elytra, scoring, scheduler, bus, recovery)
 ├── HardeningTest.java           regressions for the stability fixes (bounds, dedupe, DB coverage)
+├── TerminalLogicTest.java       terminal parser, history, aliases, registry, permissions, completion
 └── ApiContractTest.java         asserts the Meteor/Minecraft members the addon drives still exist
 ```
 

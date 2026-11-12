@@ -7,12 +7,13 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Verifies that the Meteor ElytraFly API this addon drives still exists.
+ * Verifies that the Meteor and Minecraft API surface this addon drives still exists.
  *
- * <p>ElytraController and ElytraManager reach into another mod's module: a renamed setting or enum
- * constant compiles perfectly here and then throws NoSuchFieldError in game. This check reads the class
- * files straight out of the real Meteor jar and asserts the members are present, so the contract is
- * verified without loading Minecraft classes or starting a client.
+ * <p>ElytraController, ElytraManager and the command terminal reach into another mod: a renamed setting,
+ * enum constant or GUI method compiles perfectly here and then throws NoSuchFieldError/NoSuchMethodError
+ * in game. This check reads the class files straight out of the real Meteor and Minecraft jars and asserts
+ * the members are present, so the contract is verified without loading Minecraft classes or starting a
+ * client.
  */
 public class ApiContractTest {
     static int passed = 0, failed = 0;
@@ -81,6 +82,23 @@ public class ApiContractTest {
             byte[] invUtils = read(zip, "meteordevelopment/meteorclient/utils/player/InvUtils.class");
             check("InvUtils.move present", containsUtf8(invUtils, "move"), "missing");
             check("InvUtils.find present", containsUtf8(invUtils, "find"), "missing");
+
+            System.out.println("== GUI members used by the command terminal ==");
+
+            byte[] theme = read(zip, "meteordevelopment/meteorclient/gui/GuiTheme.class");
+            check("GuiTheme.textBox present", containsUtf8(theme, "textBox"), "missing");
+            check("GuiTheme.view present", containsUtf8(theme, "view"), "missing");
+
+            // The terminal routes Tab completion through a WTextBox.Renderer; both the inner class and its
+            // getCompletions hook must exist or the box silently loses completion.
+            byte[] textBox = read(zip, "meteordevelopment/meteorclient/gui/widgets/input/WTextBox.class");
+            check("WTextBox.action present", containsUtf8(textBox, "action"), "missing");
+            byte[] renderer = read(zip,
+                "meteordevelopment/meteorclient/gui/widgets/input/WTextBox$Renderer.class");
+            check("WTextBox.Renderer.getCompletions present", containsUtf8(renderer, "getCompletions"), "missing");
+
+            byte[] view = read(zip, "meteordevelopment/meteorclient/gui/widgets/containers/WView.class");
+            check("WView.maxHeight present", containsUtf8(view, "maxHeight"), "missing");
         }
 
         // ElytraManager bounds its spare scans by PlayerInventory.MAIN_SIZE because getStack() maps higher
