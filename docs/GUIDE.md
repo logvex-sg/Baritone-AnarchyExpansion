@@ -52,12 +52,14 @@ and a set of automatic managers (elytra, mending, ender chest, survival).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add Baritone for Meteor. Only Base Hunter v1 needs it; everything else works without it.
-4. Drop `basehunting-2.1.0.jar` into `mods`.
+4. Drop `basehunting-2.3.0.jar` into `mods`.
 5. Launch the game and look for the **Base Hunting** category in Meteor's module list.
 
 Baritone is declared as a `recommends`, not a `depends`, so the addon loads whether or not it is
-present. Every Baritone reference is resolved reflectively at runtime; anything that needs pathing
-reports a clear chat error when Baritone is missing instead of crashing the client.
+present. Every Baritone call is compiled against it but guarded by a runtime availability check in
+`BaritoneHelper`; anything that needs pathing reports a clear chat error when Baritone is missing or
+unusable instead of crashing the client. Run `/bh baritone status` to see what the addon thinks of your
+Baritone install.
 
 ## Quick start
 
@@ -547,6 +549,7 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh stop` | Stop the autopilot, or cancel Baritone pathing |
 | `/bh pause` / `/bh resume` | Pause / resume the active route |
 | `/bh fly <x> <z>` | Enable Base Hunter v1 and start a route to those coordinates |
+| `/bh baritone` / `status` / `terms` / `stop` | Baritone availability, version and flight state; accept its elytra terms; cancel pathing |
 
 ### Exploration
 
@@ -651,18 +654,21 @@ skipped on the last load is reported by `/bh database status` and in the managem
 section, and logged at startup. Meteor itself also writes a timestamped `.backup.nbt` if a whole file
 fails to parse.
 
-In-memory growth is bounded: visited chunks and player sightings have fixed caps, so a very long
-session cannot grow memory without limit.
+In-memory growth is bounded: the chunk scanners cap their tracked-chunk sets (200k keys, oldest-first
+eviction) and the player tracker caps its per-server entries and sightings, so a very long session
+cannot grow memory — or the saved file — without limit.
 
 `/bh database export` writes every store into one file; `/bh database import` applies each section it
 finds and leaves stores whose section is missing untouched, so an older or partial export cannot wipe
 data it does not describe. Each store is applied in its own try/catch, so one malformed section cannot
-abort the whole import.
+abort the whole import. The section list is pinned by a headless test, so a store added later cannot
+be left out of export/import unnoticed.
 
 ## Troubleshooting
 
-**"Baritone is not installed, cannot fly."** — Base Hunter v1 needs Baritone. Use Base Hunter V2, which
-does not.
+**"Baritone is not usable: ..."** — Base Hunter v1 needs Baritone. Use Base Hunter V2, which does not.
+If Baritone is installed but reported unusable, its bundled elytra pathfinder (a nested jar) failed to
+load; run `/bh baritone status` for the reason.
 
 **"Meteor's Elytra Fly module is unavailable, cannot fly."** — ElytraFly was renamed or removed in your
 Meteor build. V2 cannot fly without it.
@@ -693,17 +699,19 @@ the addon. See the build notes in `AGENTS.md` about Xvfb and software GL.
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.1.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.3.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
 `verifyAddon` is the fast pre-flight check and is wired into `check`, so `./gradlew build` runs it too.
-It runs three headless suites: `plannerTest` (flight-planner maths), `coreLogicTest` (elytra,
-deployment, mending, inventory, stash scoring, chunk dedup, target ranking, persistence recovery,
-scheduler and event bus) and `apiContractTest` (asserts the Meteor/Minecraft members the addon drives
-still exist).
+It runs seven headless suites: `plannerTest` (flight-planner maths), `coreLogicTest` (elytra,
+deployment — including the bounded-retry `DeploymentGovernor` regression — mending, inventory, stash
+scoring, chunk dedup, target ranking, persistence recovery, scheduler and event bus), `storageLogicTest`,
+`automationLogicTest`, `hardeningTest` (bounded collections, embed dedupe, database coverage),
+`apiContractTest` (asserts the Meteor/Minecraft members the addon drives still exist) and
+`baritoneContractTest` (asserts the Baritone members the addon drives still exist).
 
 See `AGENTS.md` for the architecture and the development constraints, including how to run the client
 headlessly.

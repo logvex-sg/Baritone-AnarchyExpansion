@@ -35,6 +35,7 @@ public final class NavigationManager {
         private final String owner;
         private final BlockPos destination;
         private final double arrivalDistance;
+        private final boolean fly;
         private final long startedAt;
 
         private Status status = Status.IDLE;
@@ -43,10 +44,11 @@ public final class NavigationManager {
         private int ticksWithoutPath;
         private int issuedCount;
 
-        Request(String owner, BlockPos destination, double arrivalDistance) {
+        Request(String owner, BlockPos destination, double arrivalDistance, boolean fly) {
             this.owner = owner;
             this.destination = destination;
             this.arrivalDistance = arrivalDistance;
+            this.fly = fly;
             this.startedAt = System.currentTimeMillis();
         }
 
@@ -56,6 +58,11 @@ public final class NavigationManager {
 
         public BlockPos destination() {
             return destination;
+        }
+
+        /** True when this request travels by elytra rather than on foot. */
+        public boolean isFlight() {
+            return fly;
         }
 
         public Status status() {
@@ -77,7 +84,7 @@ public final class NavigationManager {
         public String describe() {
             return switch (status) {
                 case IDLE -> "idle";
-                case PATHING -> "pathing to " + destination.toShortString();
+                case PATHING -> (fly ? "flying to " : "pathing to ") + destination.toShortString();
                 case ARRIVED -> "arrived at " + destination.toShortString();
                 case UNREACHABLE -> "unreachable: " + failure;
                 case FAILED -> "failed: " + failure;
@@ -111,9 +118,21 @@ public final class NavigationManager {
      * @param arrivalDistance how close is close enough (also the interaction reach for a container)
      */
     public Request start(String owner, BlockPos destination, double arrivalDistance) {
+        return start(owner, destination, arrivalDistance, false);
+    }
+
+    /**
+     * Asks the player to travel to a block position, choosing on-foot or elytra travel.
+     *
+     * @param owner           the requesting system, for preemption and reporting
+     * @param destination     where to go
+     * @param arrivalDistance how close is close enough (also the interaction reach for a container)
+     * @param fly             true to travel by elytra (long range), false to walk
+     */
+    public Request start(String owner, BlockPos destination, double arrivalDistance, boolean fly) {
         cancel("superseded");
 
-        Request request = new Request(owner, destination, arrivalDistance);
+        Request request = new Request(owner, destination, arrivalDistance, fly);
 
         if (ServerUtils.mc() == null || ServerUtils.mc().player == null) {
             request.status = Status.FAILED;
@@ -128,9 +147,10 @@ public final class NavigationManager {
             return request;
         }
 
-        if (!BaritoneHelper.AVAILABLE) {
+        if (!BaritoneHelper.usable()) {
             request.status = Status.UNREACHABLE;
-            request.failure = "Baritone is not installed";
+            String health = BaritoneHelper.health();
+            request.failure = health.isEmpty() ? "Baritone is not installed" : "Baritone is unusable: " + health;
             active = request;
             return request;
         }
@@ -152,7 +172,7 @@ public final class NavigationManager {
             return;
         }
 
-        if (!BaritoneHelper.AVAILABLE) {
+        if (!BaritoneHelper.usable()) {
             active.status = Status.UNREACHABLE;
             active.failure = "Baritone became unavailable";
             return;
@@ -165,7 +185,7 @@ public final class NavigationManager {
 
         // Baritone stopping without arriving means the path failed or was interrupted. Give it a few retries
         // before declaring the destination unreachable, so a momentarily-blocked path can recover.
-        if (!BaritoneHelper.isPathing()) {
+        if (!BaritoneHelper.isMoving()) {
             if (active.ticksWithoutPath++ > 40) {
                 if (active.issuedCount >= 3) {
                     active.status = Status.UNREACHABLE;
@@ -208,15 +228,16 @@ public final class NavigationManager {
     }
 
     private void issue(Request request) {
-        if (!BaritoneHelper.AVAILABLE) return;
-        BaritoneHelper.walkTo(request.destination);
+        if (!BaritoneHelper.usable()) return;
+        if (request.fly) BaritoneHelper.elytraPathTo(request.destination);
+        else BaritoneHelper.walkTo(request.destination);
         request.pathIssued = true;
         request.issuedCount++;
         request.ticksWithoutPath = 0;
     }
 
     private void stopBaritone() {
-        if (BaritoneHelper.AVAILABLE && BaritoneHelper.isPathing()) BaritoneHelper.stop();
+        if (BaritoneHelper.usable() && BaritoneHelper.isMoving()) BaritoneHelper.stop();
     }
 
     private boolean withinReach(BlockPos destination, double distance) {

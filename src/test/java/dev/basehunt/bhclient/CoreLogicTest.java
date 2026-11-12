@@ -6,6 +6,7 @@ import dev.basehunt.bhclient.core.ControlResource;
 import dev.basehunt.bhclient.core.Lease;
 import dev.basehunt.bhclient.core.Priority;
 import dev.basehunt.bhclient.core.TaskScheduler;
+import dev.basehunt.bhclient.core.logic.DeploymentGovernor;
 import dev.basehunt.bhclient.core.logic.ElytraDeployment;
 import dev.basehunt.bhclient.core.logic.ElytraDurability;
 import dev.basehunt.bhclient.core.logic.ExplorationPlanner;
@@ -58,6 +59,8 @@ public class CoreLogicTest {
         recordRecovery();
         targetPrioritisation();
         retryPolicy();
+        boundedDeployment();
+        deploymentGovernor();
         explorationPlanner();
         survivalThresholds();
         scheduler();
@@ -477,6 +480,132 @@ public class CoreLogicTest {
         policy.reset();
         check("reset clears attempts", policy.attempts() == 0 && !policy.exhausted(), "not reset");
         check("backoff never exceeds the cap", new RetryPolicy(10, 100, 500).millisUntilNextAttempt(0) >= 0, "negative");
+    }
+
+    /**
+     * The rule Base Hunter v1's Baritone autopilot follows: a launch that keeps failing is retried with
+     * backoff and then abandoned, never re-issued every tick forever. This models the exact loop the module
+     * runs (classify state, gate on the policy, record an attempt) so a regression in the composition is
+     * caught headlessly rather than in the air.
+     */
+    static void boundedDeployment() {
+        section("bounded flight deployment");
+
+        // Swimming cannot deploy: the loop must wait without spending an attempt.
+        boolean attemptedWhileSwimming = false;
+        for (long t = 0; t < 100_000; t += 50) {
+            if (FlightState.SWIMMING.canDeploy()) attemptedWhileSwimming = true;
+        }
+        check("a launch is never attempted while swimming", !attemptedWhileSwimming, "attempted");
+
+        // A grounded player with a healthy retry gate launches immediately.
+        RetryPolicy ok = new RetryPolicy(6, 1000, 20000);
+        check("first launch allowed from the ground",
+            FlightState.GROUNDED.canDeploy() && ok.canAttempt(0), "blocked");
+
+        // A launch that never succeeds is bounded: exactly the configured number of attempts, then exhausted.
+        RetryPolicy stuck = new RetryPolicy(4, 1000, 20000);
+        int issued = 0;
+        long now = 0;
+        while (!stuck.exhausted() && now < 600_000) {
+            if (stuck.canAttempt(now)) {
+                stuck.recordAttempt(now);
+                issued++;
+            }
+            now += 50; // 20 ticks per second
+        }
+        check("a failing launch is capped at the configured attempts", issued == 4, "issued " + issued);
+        check("the policy reports exhaustion", stuck.exhausted(), "not exhausted");
+        check("an exhausted policy refuses further attempts at any time",
+            !stuck.canAttempt(now + 10_000_000), "allowed");
+
+        // Backoff grows, so a doomed launch does not spin at full tick rate.
+        RetryPolicy backoff = new RetryPolicy(6, 1000, 20000);
+        backoff.recordAttempt(0);
+        long firstGap = backoff.millisUntilNextAttempt(0);
+        backoff.recordAttempt(firstGap);
+        long secondGap = backoff.millisUntilNextAttempt(firstGap);
+        check("the gap between attempts grows", secondGap > firstGap, firstGap + " then " + secondGap);
+        check("the gap is capped", secondGap <= 20000, "got " + secondGap);
+
+        // A fresh leg resets the budget, so a failure on the previous leg does not carry over.
+        RetryPolicy leg = new RetryPolicy(2, 1000, 20000);
+        leg.recordAttempt(0);
+        leg.recordAttempt(5000);
+        check("a leg can exhaust its budget", leg.exhausted(), "not exhausted");
+        leg.reset();
+        check("a new leg gets a fresh budget", !leg.exhausted() && leg.attempts() == 0, "not reset");
+    }
+
+    /**
+     * The exact regression this release fixes: a route that re-asserts "I want to fly" every tick must still
+     * have its launch retries bounded. The old {@code FlightController.setWantsFlight(true)} reset the retry
+     * budget on every call, so a doomed takeoff was retried forever. This models the per-tick loop the route
+     * module actually runs and asserts the budget is spent and then respected.
+     */
+    static void deploymentGovernor() {
+        section("deployment governor");
+
+        // Re-asserting "want to fly" every tick must not reset the budget: drive the exact loop V2 runs.
+        DeploymentGovernor governor = new DeploymentGovernor(4, 1000, 8000);
+        int launches = 0;
+        long now = 0;
+        for (int tick = 0; tick < 400 && !governor.exhausted(); tick++) {
+            governor.setWantsFlight(true); // the route sets this every tick
+            if (governor.canAttempt(now)) {
+                governor.recordAttempt(now);
+                launches++;
+            }
+            now += 50; // 20 ticks per second
+        }
+        check("a doomed takeoff is capped even when flight is re-asserted every tick",
+            launches == 4, "issued " + launches);
+        check("the governor reports exhaustion", governor.exhausted(), "not exhausted");
+        check("an exhausted governor refuses further launches at any later time",
+            !governor.canAttempt(now + 10_000_000), "allowed");
+
+        // Turning flight off and on again is a genuine new attempt and gets a fresh budget.
+        governor.setWantsFlight(false);
+        governor.setWantsFlight(true);
+        check("toggling flight off then on resets the budget", !governor.exhausted() && governor.attempts() == 0,
+            "attempts=" + governor.attempts());
+
+        // beginLeg also resets, for a caller that starts a new leg without toggling the flag.
+        governor.recordAttempt(0);
+        governor.recordAttempt(5000);
+        governor.recordAttempt(10000);
+        governor.recordAttempt(20000);
+        check("a leg can spend its budget", governor.exhausted(), "not exhausted");
+        governor.beginLeg();
+        check("a new leg gets a fresh budget", !governor.exhausted() && governor.attempts() == 0, "not reset");
+
+        // A glide actually starting replenishes the budget for the next interruption.
+        DeploymentGovernor replenish = new DeploymentGovernor(3, 1000, 8000);
+        replenish.setWantsFlight(true);
+        replenish.recordAttempt(0);
+        replenish.recordAttempt(5000);
+        replenish.recordAttempt(20000);
+        check("budget spent before the glide", replenish.exhausted(), "not exhausted");
+        replenish.noteState(FlightState.GROUNDED);
+        replenish.noteState(FlightState.GLIDING);
+        check("a live glide replenishes the budget", !replenish.exhausted() && replenish.attempts() == 0,
+            "attempts=" + replenish.attempts());
+
+        // A landing (glide -> grounded) is reported once, and only while flight is wanted.
+        DeploymentGovernor landing = new DeploymentGovernor(4, 1000, 8000);
+        landing.setWantsFlight(true);
+        landing.noteState(FlightState.GLIDING);
+        landing.noteState(FlightState.GROUNDED);
+        check("a glide ending on the ground is reported as a landing", landing.justLanded(), "not reported");
+        landing.noteState(FlightState.GROUNDED);
+        check("a steady grounded state is not a new landing", !landing.justLanded(), "reported again");
+
+        // The deploy-failure report fires exactly once per exhausted budget.
+        DeploymentGovernor once = new DeploymentGovernor(1, 0, 0);
+        once.setWantsFlight(true);
+        once.recordAttempt(0);
+        check("the first exhausted check reports", once.shouldReportDeployFailure(), "not reported");
+        check("the second exhausted check stays quiet", !once.shouldReportDeployFailure(), "reported twice");
     }
 
     static void explorationPlanner() {

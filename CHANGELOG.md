@@ -3,6 +3,123 @@
 All notable changes to the Base Hunting Client. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-11-11
+
+The stability-hardening release. Every change here is a bug that was found by reading the code: an
+unbounded retry loop that would hammer a doomed takeoff forever, three collections that grew without
+limit over a long flight, a backup that silently dropped three of the seven databases, an inventory
+scan that could pick the chest slot, and a couple of null dereferences. Each fix has a regression test
+that would fail if it came back. `./gradlew build` is green (36 + 147 + 30 + 196 + 21 + 21 + 131
+headless assertions) and the addon loads in a real dev client.
+
+### Fixed — the v2 autopilot retried a doomed takeoff forever
+
+- **Bounded v2 deployment.** `BaseHunterV2` calls `FlightController.setWantsFlight(true)` on every tick
+  while a route is active. `setWantsFlight` reset the launch retry policy on every call, so the launch
+  budget was refilled 20 times a second and a takeoff that could never succeed (no viable elytra, a
+  blocked launch, a hole in the ground) was retried forever — the same failure mode that was fixed for
+  v1 in 2.2.0. The flag now only resets the budget on a genuine off→on transition, and a glide that
+  actually starts replenishes it for the next interruption. The policy is extracted into a pure
+  `DeploymentGovernor` so the "never retry forever" rule is asserted headlessly: a simulated 400-tick
+  loop that re-asserts flight every tick issues exactly the configured number of launches and then
+  stops.
+- **Landing report is a one-shot.** `DeploymentGovernor` now clears the "just landed" flag on a repeat
+  state, so a player standing on the ground is not reported as landing again every tick.
+
+### Fixed — unbounded memory over a long session
+
+- **`NewChunks` chunk sets.** `newChunks`, `oldChunks` and the `foundAt` timestamp map grew without
+  bound; a multi-hour flight loads hundreds of thousands of chunks. They are now backed by a new
+  `BoundedLongSet` (hard cap of 200k, oldest-first eviction) and the `foundAt` map is pruned by the
+  same eviction, so a dropped key never leaves a stale timestamp. The age-based cleanup no longer
+  leaves orphaned insertion-order entries behind.
+- **`StashFinder.lastScanned`.** The map of already-scanned chunk keys never shrank, so it grew for
+  every chunk ever scanned. It is now size-capped with oldest-first eviction and old entries are
+  pruned when their rescan window has passed.
+
+### Fixed — a backup could silently discard live data
+
+- **`DatabaseIO` covered four of seven stores.** Export wrote only stashes, players, ender chests and
+  exploration; the storage registry, storage workflows and kits were missing. Importing such a file
+  left those three untouched on the exporting machine but wiped them on a fresh one — a backup that
+  loses data is worse than no backup. All seven stores now round-trip, and a headless test pins the
+  section list so a newly added store cannot fall out of the path unnoticed.
+
+### Fixed — duplicate suppression and lost alerts
+
+- **`Embed.fingerprint()` ignored the footer and thumbnail.** Two alerts that differed only in their
+  footer or thumbnail shared a fingerprint and were collapsed by the 3s dedupe window. The fingerprint
+  now covers every field that reaches Discord, and is asserted to be un-forgeable from field text.
+- **A dropped webhook suppressed its own retry.** `WebhookManager.enqueue` recorded the dedupe key
+  before the queue offer, so a message dropped on a full queue still marked the key as "recent" and the
+  retry within the next 3s was discarded as a duplicate. The key is now rolled back when the offer
+  fails.
+
+### Fixed — wrong target and null dereferences
+
+- **Elytra replacement could pick the chest slot.** `ElytraManager` scans bounded by
+  `PlayerInventory.MAIN_SIZE` so an inventory index is never mapped onto an armour slot; a couple of
+  lookups were not bounded and could count the worn elytra as a spare or select the chest slot as the
+  replacement source.
+- **`bestSpareRemaining()` null dereference.** Every sibling method guards `mc.player`, but this one
+  dereferenced it directly and is called from the `/bh elytra status` command — a crash if the command
+  is run before a world is joined.
+- **Task-id collision.** `AutomationEngine` kept its own id counter while `TaskQueue` kept another, so
+  task ids could collide and a `cancel(id)` could hit the wrong task. All id assignment now goes
+  through the queue's single counter.
+- **`BaseHunterV2` re-warning.** The "not flying" warning flag was never cleared on a resumed flight,
+  so only the first interruption of a session was ever reported.
+
+### Added
+
+- **`BoundedLongSet`** — a tested, synchronized, size-capped set of packed chunk keys with an eviction
+  callback, used by the chunk scanners.
+- **`DeploymentGovernor`** — the pure deploy/recover policy behind `FlightController`, so the retry
+  rules are unit-testable without a client.
+- **`HardeningTest`** — a new headless suite (bounded collections, embed dedupe, database coverage),
+  wired into `verifyAddon`.
+
+## [2.2.0] — 2026-11-11
+
+The Baritone hardening release. The v1 Baritone autopilot no longer re-issues its flight path every
+tick, a launch that keeps failing is retried with backoff and then abandoned, and the whole Baritone
+API surface the addon drives is now verified against the real jar by a headless contract test.
+`./gradlew clean build` is green (36 + 147 + 184 + 30 + 21 + 131 headless assertions) and the addon
+loads in a real dev client with Baritone present and no exceptions.
+
+### Fixed — v1 autopilot no longer hammers a doomed launch
+
+- **Bounded flight deployment.** `BaseHunter` (v1) previously called `BaritoneHelper.elytraPathTo`
+  every client tick while not gliding, so a takeoff that could never succeed (no firework, a blocked
+  launch, a spent elytra) was retried 20 times a second forever. It now classifies the player's
+  physical state (`FlightState`) and drives launches through a `RetryPolicy`: a failed launch is
+  retried with exponential backoff (1s → 20s) and, after `deploy-retries` attempts (default 6), the
+  reason is reported once and the route stops cleanly. Swimming or climbing waits without spending an
+  attempt, and a new leg resets the budget.
+- **Baritone health, not just presence.** `BaritoneHelper.AVAILABLE` only proved the classes were on
+  the classpath. Baritone bundles its elytra pathfinder as a nested jar; when that fails to load,
+  `BaritoneAPI`'s static initialiser throws and every call into it throws too. The helper now probes
+  with the class *not* initialised and resolves the primary baritone once, caching the outcome and the
+  reason. `usable()` and `health()` let callers degrade to "not usable" instead of crashing, and every
+  guard in `BaseHunter` and `NavigationManager` uses them.
+- **One owner of elytra replacement.** v1's `applyBaritoneSettings` set `elytraAutoSwap = true`,
+  racing `ElytraManager` (the addon's single owner) to swap the same chest slot. It is now `false`.
+
+### Added — navigation, status and verification
+
+- **Elytra travel in `NavigationManager`.** Long-range navigation requests can now fly instead of only
+  walking, via `start(owner, destination, arrivalDistance, fly)`. Arrival and interruption detection
+  use `isMoving()` (path or elytra) rather than `isPathing()`, so an elytra leg is not mistaken for a
+  finished path.
+- **`/bh baritone` command group** — `status` (availability, version, primary instance, pathing and
+  flight state), `terms` (accept Baritone's elytra terms), and `stop` (cancel Baritone pathing).
+- **Baritone HUD line** — an optional `show-baritone` element reports availability, version and
+  whether Baritone is currently moving.
+- **`baritoneContractTest`** — a headless test that reads the real Baritone jar and asserts every
+  interface, process, goal, command-manager and elytra setting the addon drives still exists (30
+  assertions). It is wired into `verifyAddon`, so a Baritone rename is caught before release rather
+  than mid-flight on a user's machine.
+
 ## [2.1.0] — 2026-11-11
 
 The automation release. Adds a priority task engine, a declarative rule engine, an in-chat command

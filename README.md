@@ -62,7 +62,7 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `basehunting-2.1.0.jar` into `mods`.
+4. Drop `basehunting-2.3.0.jar` into `mods`.
 5. Launch the game and look for the **Base Hunting** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
@@ -93,6 +93,7 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh stop` | Stop the autopilot, or cancel Baritone pathing |
 | `/bh pause` / `/bh resume` | Pause / resume the active route |
 | `/bh fly <x> <z>` | Enable Base Hunter v1 and start a route to those coordinates |
+| `/bh baritone` / `status` / `terms` / `stop` | Baritone availability, version and flight state; accept its elytra terms; cancel pathing |
 | `/bh explore grid` / `spiral` / `adaptive` / `heading` | Start V2 in that sweep mode |
 | `/bh explore status` | Explored chunks, review queue, waypoints, V2 state |
 | `/bh v2` / `v2 start` / `v2 stop` / `v2 refresh` | Base Hunter V2 status and lifecycle |
@@ -296,18 +297,23 @@ exploration (visited chunks + route waypoints), the storage registry, storage wo
 versioned and reads its records tolerantly, so a single corrupted record is skipped rather than losing
 the whole database — the skipped count is reported by `/bh database status`. `/bh database export`
 writes every store to one file; import applies each section it finds and never wipes a store whose
-section is missing.
+section is missing. The section list is pinned by a headless test, so a newly added store cannot fall
+out of the export/import path unnoticed.
+
+Long sessions are bounded: the chunk scanners cap their tracked-chunk sets (oldest-first eviction) and
+the player tracker caps its per-server entries and sightings, so a multi-hour flight cannot grow the
+process or the saved file without limit.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md). The current release is **2.1.0** — the automation release.
+See [CHANGELOG.md](CHANGELOG.md). The current release is **2.3.0** — the stability-hardening release.
 
 ## Building from source
 
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.1.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.3.0.jar
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
@@ -327,6 +333,9 @@ src/main/java/dev/basehunt/bhclient/
 │   ├── AutomationManager / AutomationBus / AutomationEvent
 │   ├── TaskScheduler / Priority / ControlResource / Lease
 │   └── logic/                   pure, headlessly testable decision logic
+│       ├── DeploymentGovernor   bounded deploy/recover policy (FlightController)
+│       ├── BoundedLongSet       size-capped packed-chunk-key set
+│       └── ...                  scoring, planning, classification, codecs
 ├── modules/                     the ten user-facing modules
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore,
 │                                ExplorationStore (persisted state), DatabaseIO
@@ -337,6 +346,7 @@ src/main/java/dev/basehunt/bhclient/
 src/test/java/dev/basehunt/bhclient/
 ├── PlannerTest.java             FlightPlanner maths, no display needed
 ├── CoreLogicTest.java           pure-logic suite (elytra, scoring, scheduler, bus, recovery)
+├── HardeningTest.java           regressions for the stability fixes (bounds, dedupe, DB coverage)
 └── ApiContractTest.java         asserts the Meteor/Minecraft members the addon drives still exist
 ```
 

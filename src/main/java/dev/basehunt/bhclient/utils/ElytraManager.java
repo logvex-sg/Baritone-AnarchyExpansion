@@ -88,6 +88,8 @@ public final class ElytraManager {
      * flight has enough elytra left to be worth starting at all.
      */
     public static int bestSpareRemaining() {
+        if (ServerUtils.mc().player == null) return -1;
+
         int best = -1;
 
         for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {

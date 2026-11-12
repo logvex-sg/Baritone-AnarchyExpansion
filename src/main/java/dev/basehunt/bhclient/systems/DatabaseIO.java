@@ -20,12 +20,39 @@ import java.nio.file.Files;
  *
  * <p>Import is defensive on purpose. A tag missing a section leaves that store untouched, so an older or
  * partial export can never wipe data it does not describe.
+ *
+ * <p>Every persisted store must appear in {@link #SECTIONS}; the coverage is asserted by the headless
+ * suite so a newly added store cannot silently fall out of the backup path. A store that was missing here
+ * would be exported empty and, worse, importing a backup would silently discard its live data.
  */
 public final class DatabaseIO {
     private static final String EXPORT_FILE_NAME = "base-hunting-export.nbt";
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
+
+    /**
+     * One persisted store: the key it is stored under and how to reach it. Keeping this as data (rather
+     * than four parallel put/apply call sites) is what makes it impossible to add a store to one direction
+     * and forget the other.
+     */
+    private record Section(String key, java.util.function.Supplier<meteordevelopment.meteorclient.systems.System<?>> store) {
+    }
+
+    private static final java.util.List<Section> SECTIONS = java.util.List.of(
+        new Section("stashes", StashManager::get),
+        new Section("players", PlayerTracker::get),
+        new Section("enderChests", EnderChestStore::get),
+        new Section("exploration", ExplorationStore::get),
+        new Section("storage", StorageRegistry::get),
+        new Section("workflows", WorkflowManager::get),
+        new Section("kits", KitBotStore::get)
+    );
 
     private DatabaseIO() {
+    }
+
+    /** The keys every export carries; used by the coverage test. */
+    public static java.util.List<String> sectionKeys() {
+        return SECTIONS.stream().map(Section::key).toList();
     }
 
     /** Builds one NBT tag holding every store's data. */
@@ -34,10 +61,7 @@ public final class DatabaseIO {
         root.putInt("formatVersion", FORMAT_VERSION);
         root.putLong("exportedAt", java.lang.System.currentTimeMillis());
 
-        put(root, "stashes", StashManager.get());
-        put(root, "players", PlayerTracker.get());
-        put(root, "enderChests", EnderChestStore.get());
-        put(root, "exploration", ExplorationStore.get());
+        for (Section section : SECTIONS) put(root, section.key(), section.store().get());
 
         return root;
     }
@@ -56,10 +80,7 @@ public final class DatabaseIO {
         int applied = 0;
         if (root == null) return 0;
 
-        applied += apply("stashes", root, StashManager.get());
-        applied += apply("players", root, PlayerTracker.get());
-        applied += apply("enderChests", root, EnderChestStore.get());
-        applied += apply("exploration", root, ExplorationStore.get());
+        for (Section section : SECTIONS) applied += apply(section.key(), root, section.store().get());
 
         return applied;
     }

@@ -12,6 +12,7 @@ import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.PlayerTracker;
 import dev.basehunt.bhclient.systems.StashManager;
 import dev.basehunt.bhclient.utils.ServerUtils;
+import dev.basehunt.bhclient.utils.BaritoneHelper;
 import dev.basehunt.bhclient.modules.KitBot;
 import dev.basehunt.bhclient.systems.AutomationEngine;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -108,6 +109,13 @@ public class BaseHuntingHud extends HudElement {
         .name("show-flight-state")
         .description("Show whether you are airborne, grounded, swimming or gliding.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showBaritone = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-baritone")
+        .description("Show Baritone availability, version and pathing state.")
+        .defaultValue(false)
         .build()
     );
 
@@ -231,6 +239,18 @@ public class BaseHuntingHud extends HudElement {
         if (showFlightState.get() && mc.player != null) {
             lines.add("Flight: " + dev.basehunt.bhclient.utils.ElytraManager.flightState()
                 .name().toLowerCase(java.util.Locale.ROOT));
+        }
+
+        if (showBaritone.get()) {
+            if (!BaritoneHelper.AVAILABLE) {
+                lines.add("Baritone: not installed");
+            } else {
+                String health = BaritoneHelper.health();
+                if (!health.isEmpty()) lines.add("Baritone: unusable");
+                else lines.add("Baritone: %s%s".formatted(
+                    BaritoneHelper.version(),
+                    BaritoneHelper.isMoving() ? " (moving)" : ""));
+            }
         }
 
         NewChunks newChunks = Modules.get().get(NewChunks.class);

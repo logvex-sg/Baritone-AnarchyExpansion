@@ -77,10 +77,33 @@ tasks.register<JavaExec>("apiContractTest") {
     args(meteorJar.absolutePath, minecraftJar.absolutePath)
 }
 
+// Guards against Baritone renaming the API the addon drives. Baritone is compile-only, so a renamed
+// interface would compile here and only fail at runtime on a user's machine.
+tasks.register<JavaExec>("baritoneContractTest") {
+    group = "verification"
+    description = "Checks the Baritone API surface this addon drives."
+
+    val baritoneJar = configurations.getByName("compileClasspath").files
+        .firstOrNull { it.name.startsWith("baritone") }
+        ?: throw GradleException("baritone jar not found on the compile classpath")
+
+    classpath = sourceSets.test.get().output
+    mainClass.set("dev.basehunt.bhclient.BaritoneContractTest")
+    args(baritoneJar.absolutePath)
+}
+
 tasks.register("verifyAddon") {
     group = "verification"
-    description = "Runs the headless planner and API contract tests."
-    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "automationLogicTest", "apiContractTest")
+    description = "Runs the headless planner, logic, storage, automation and API contract tests."
+    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "automationLogicTest", "hardeningTest", "apiContractTest", "baritoneContractTest")
+}
+
+tasks.register<JavaExec>("hardeningTest") {
+    group = "verification"
+    description = "Runs the regression tests for the stability fixes (bounded collections, embed dedupe, database coverage)."
+    dependsOn("testClasses")
+    classpath = sourceSets.test.get().runtimeClasspath + sourceSets.test.get().output
+    mainClass.set("dev.basehunt.bhclient.HardeningTest")
 }
 
 tasks.register<JavaExec>("automationLogicTest") {

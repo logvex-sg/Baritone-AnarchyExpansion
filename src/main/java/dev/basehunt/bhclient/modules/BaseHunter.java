@@ -2,6 +2,8 @@ package dev.basehunt.bhclient.modules;
 
 import baritone.api.Settings;
 import dev.basehunt.bhclient.BaseHuntingAddon;
+import dev.basehunt.bhclient.core.logic.FlightState;
+import dev.basehunt.bhclient.core.logic.RetryPolicy;
 import dev.basehunt.bhclient.systems.StashManager;
 import dev.basehunt.bhclient.utils.BaritoneHelper;
 import dev.basehunt.bhclient.utils.ElytraManager;
@@ -244,6 +246,15 @@ public class BaseHunter extends Module {
         .build()
     );
 
+    private final Setting<Integer> deployRetries = sgSafety.add(new IntSetting.Builder()
+        .name("deploy-retries")
+        .description("How many times to retry a failed takeoff before stopping. 0 retries forever (not advised).")
+        .defaultValue(6)
+        .min(0)
+        .sliderRange(0, 30)
+        .build()
+    );
+
     // Render
 
     private final Setting<Boolean> render = sgRender.add(new BoolSetting.Builder()
@@ -316,6 +327,13 @@ public class BaseHunter extends Module {
     private boolean started;
     private int elytraSwaps;
 
+    // Bounded flight-deployment recovery. Baritone re-plans on its own, but a launch can fail repeatedly
+    // (no firework, blocked takeoff, a spent elytra). The backoff gate stops the autopilot from re-issuing
+    // pathTo every tick forever, and the attempt cap escalates to a clear stop instead of hammering on.
+    private RetryPolicy deployPolicy = new RetryPolicy(6, 1000, 20000);
+    private boolean deployFailureReported;
+    private long lastDeployAttemptAt;
+
 
 
     public BaseHunter() {
@@ -339,8 +357,10 @@ public class BaseHunter extends Module {
         lastProgressTime = now;
 
 
-        if (!BaritoneHelper.AVAILABLE) {
-            error("Baritone is not installed. Base Hunter needs Baritone to fly.");
+        if (!BaritoneHelper.usable()) {
+            String health = BaritoneHelper.health();
+            error("Baritone is not usable: %s. Base Hunter v1 needs Baritone to fly; use v2 for firework-free flight.",
+                health.isEmpty() ? "not installed" : health);
             toggle();
             return;
         }
@@ -379,7 +399,9 @@ public class BaseHunter extends Module {
         Settings settings = BaritoneHelper.settings();
         if (settings == null) return;
 
-        settings.elytraAutoSwap.value = true;
+        // The addon owns elytra replacement (ElytraManager), so Baritone's own auto-swap is left off:
+        // two owners racing to swap the same chest slot is worse than one.
+        settings.elytraAutoSwap.value = false;
         settings.elytraAllowEmergencyLand.value = true;
         settings.elytraConserveFireworks.value = true;
         settings.elytraAutoJump.value = true;
@@ -387,7 +409,8 @@ public class BaseHunter extends Module {
         settings.elytraChatSpam.value = false;
     }
 
-    private void acceptTerms() {
+    /** Accepts Baritone's elytra terms so its pathfinder will fly. Used by the module and /bh baritone terms. */
+    public void acceptTerms() {
         Settings settings = BaritoneHelper.settings();
         if (settings == null || settings.elytraTermsAccepted.value) return;
 
@@ -419,6 +442,7 @@ public class BaseHunter extends Module {
         started = true;
         travelledBlocks = 0;
         legStart = mc.player.getBlockPos();
+        resetDeployPolicy();
 
         if (mode.get() == Mode.Waypoints && waypoints.isEmpty()) {
             // Fall back to stored stashes so "fly to my bases" works without extra setup.
@@ -457,7 +481,7 @@ public class BaseHunter extends Module {
     @EventHandler
     private void onTick(TickEvent.Post event) {
         if (mc.player == null || mc.world == null) return;
-        if (!BaritoneHelper.AVAILABLE) return;
+        if (!BaritoneHelper.usable()) return;
 
         // Nothing should fly until the route is actually started, otherwise enabling the module with
         // auto-start off would immediately begin sweeping.
@@ -494,14 +518,80 @@ public class BaseHunter extends Module {
         }
 
         if (!BaritoneHelper.isElytraLoaded()) {
-            BaritoneHelper.elytraPathTo(currentDestination);
+            if (!tryDeployFlight()) return;
             if (chatFeedback.get()) info("Flying to (highlight)%d, %d (default)(%d blocks away).",
                 currentDestination.getX(), currentDestination.getZ(), distanceTo(currentDestination));
             return;
         }
 
+        // Gliding again: a launch that previously failed has now succeeded, so clear the backoff so the
+        // next interruption starts from a clean slate.
+        if (deployPolicy.attempts() > 0) {
+            deployPolicy.reset();
+            deployFailureReported = false;
+        }
+
         trackTravel();
         sendProgressIfDue();
+    }
+
+    /**
+     * Issues the Baritone elytra path, bounded by a backoff gate and an attempt cap.
+     *
+     * <p>Baritone re-plans its own route once it is flying, so the autopilot must not call {@code pathTo}
+     * every tick. Worse, when a takeoff keeps failing (no firework, blocked launch, a spent elytra) the old
+     * code re-issued it 20 times a second forever. Here a failed launch is retried with exponential backoff
+     * and, once the configured cap is reached, reported once and the route stops cleanly.
+     *
+     * @return true when the route may continue this tick
+     */
+    private boolean tryDeployFlight() {
+        long now = java.lang.System.currentTimeMillis();
+        FlightState state = flightState();
+
+        // Swimming or climbing: a launch cannot succeed from here, so wait without spending an attempt.
+        if (!state.canDeploy()) {
+            return true;
+        }
+
+        if (deployPolicy.exhausted()) {
+            if (!deployFailureReported) {
+                deployFailureReported = true;
+                if (chatFeedback.get()) warning("Could not start flying after %d attempts; stopping.", deployPolicy.attempts());
+                if (notifyStateChanges.get() && webhook.isEnabled() && !WebhookSettings.globallyMuted()) {
+                    webhook.send(new WebhookManager.Embed()
+                        .title("Base Hunter deploy failed")
+                        .description("Could not launch after repeated attempts.")
+                        .color(0xFF5555)
+                        .field("State", state.name().toLowerCase())
+                        .field("Attempts", String.valueOf(deployPolicy.attempts()))
+                        .field("Elytra", ElytraManager.status())
+                        .field("Position", ServerUtils.coordinates())
+                        .field("Server", ServerUtils.serverAddress())
+                        .footer("Base Hunting Client"));
+                }
+            }
+            stopAndMaybeDisconnect("Could not start flying");
+            return false;
+        }
+
+        if (!deployPolicy.canAttempt(now)) return true;
+
+        BaritoneHelper.elytraPathTo(currentDestination);
+        deployPolicy.recordAttempt(now);
+        lastDeployAttemptAt = now;
+        return true;
+    }
+
+    /** Classifies the player's physical state so a launch is only attempted when it can plausibly work. */
+    private FlightState flightState() {
+        if (mc.player == null || mc.world == null) return FlightState.UNKNOWN;
+        return FlightState.classify(
+            mc.player.isGliding(),
+            mc.player.isTouchingWater(),
+            mc.player.isClimbing(),
+            mc.player.isOnGround(),
+            mc.player.getVelocity().y);
     }
 
     /**
@@ -720,7 +810,16 @@ public class BaseHunter extends Module {
             return;
         }
 
+        // A fresh leg gets a fresh launch budget: a failure on the previous leg must not carry over.
+        resetDeployPolicy();
         BaritoneHelper.elytraPathTo(currentDestination);
+    }
+
+    /** Rebuilds the launch retry policy so a new leg (or a restart) starts with a full attempt budget. */
+    private void resetDeployPolicy() {
+        int limit = deployRetries.get();
+        deployPolicy = new RetryPolicy(limit <= 0 ? Integer.MAX_VALUE : limit, 1000, 20000);
+        deployFailureReported = false;
     }
 
     private BlockPos headingDestination(int playerX, int playerZ) {

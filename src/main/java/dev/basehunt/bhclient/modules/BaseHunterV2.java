@@ -882,6 +882,8 @@ public class BaseHunterV2 extends Module {
 
         if (!autoRedeploy.get() || state == FlightState.GLIDING) {
             awaitingRedeploy = false;
+            // A live glide means the previous interruption is over, so re-arm the one-time warning.
+            if (state == FlightState.GLIDING) warnedNotFlying = false;
             lastFlightState = state;
             return;
         }
