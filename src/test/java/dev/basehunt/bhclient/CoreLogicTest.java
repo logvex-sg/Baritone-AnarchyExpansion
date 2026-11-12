@@ -7,6 +7,7 @@ import dev.basehunt.bhclient.core.Lease;
 import dev.basehunt.bhclient.core.Priority;
 import dev.basehunt.bhclient.core.TaskScheduler;
 import dev.basehunt.bhclient.core.logic.DeploymentGovernor;
+import dev.basehunt.bhclient.core.logic.DatabaseVersion;
 import dev.basehunt.bhclient.core.logic.ElytraDeployment;
 import dev.basehunt.bhclient.core.logic.ElytraDurability;
 import dev.basehunt.bhclient.core.logic.ExplorationPlanner;
@@ -14,6 +15,7 @@ import dev.basehunt.bhclient.core.logic.ExploredRegions;
 import dev.basehunt.bhclient.core.logic.FlightState;
 import dev.basehunt.bhclient.core.logic.InventoryPlan;
 import dev.basehunt.bhclient.core.logic.ItemCategory;
+import dev.basehunt.bhclient.core.logic.JourneyPlan;
 import dev.basehunt.bhclient.core.logic.MendingPriorities;
 import dev.basehunt.bhclient.core.logic.RecordCodec;
 import dev.basehunt.bhclient.core.logic.RetryPolicy;
@@ -57,6 +59,8 @@ public class CoreLogicTest {
         stashScoring();
         chunkDeduplication();
         recordRecovery();
+        databaseVersioning();
+        journeyPlan();
         targetPrioritisation();
         retryPolicy();
         boundedDeployment();
@@ -416,6 +420,86 @@ public class CoreLogicTest {
         NbtCompound tag = new NbtCompound();
         tag.putInt("id", id);
         return tag;
+    }
+
+    static void databaseVersioning() {
+        section("database versioning");
+
+        check("the current version is accepted",
+            DatabaseVersion.verdict(DatabaseVersion.CURRENT) == DatabaseVersion.Verdict.CURRENT, "wrong verdict");
+        check("an older version is legacy",
+            DatabaseVersion.verdict(DatabaseVersion.CURRENT - 1) == DatabaseVersion.Verdict.LEGACY, "wrong verdict");
+        check("a newer version is too new",
+            DatabaseVersion.verdict(DatabaseVersion.CURRENT + 1) == DatabaseVersion.Verdict.TOO_NEW, "wrong verdict");
+
+        check("only a newer version is refused", DatabaseVersion.shouldRefuse(DatabaseVersion.CURRENT + 1), "not refused");
+        check("a legacy version is not refused", !DatabaseVersion.shouldRefuse(1), "refused");
+        check("the current version is not refused", !DatabaseVersion.shouldRefuse(DatabaseVersion.CURRENT), "refused");
+
+        // A tag with no version header is treated as current, not rejected, so a hand-made tag still imports.
+        check("a missing header reads as current",
+            DatabaseVersion.verdictOf(new NbtCompound()) == DatabaseVersion.Verdict.CURRENT, "wrong verdict");
+
+        NbtCompound future = new NbtCompound();
+        future.putInt(DatabaseVersion.KEY, DatabaseVersion.CURRENT + 5);
+        check("a future tag is refused",
+            DatabaseVersion.verdictOf(future) == DatabaseVersion.Verdict.TOO_NEW, "not refused");
+
+        NbtCompound legacy = new NbtCompound();
+        legacy.putInt(DatabaseVersion.KEY, 1);
+        check("a legacy tag is not refused",
+            DatabaseVersion.verdictOf(legacy) == DatabaseVersion.Verdict.LEGACY, "wrong verdict");
+        check("the version is read from the formatVersion key",
+            DatabaseVersion.versionOf(legacy) == 1, "wrong version");
+
+        check("the description names the version", DatabaseVersion.describe(2).contains("v2"), "no version");
+        check("the refusal description says refused",
+            DatabaseVersion.describe(DatabaseVersion.CURRENT + 1).toLowerCase(java.util.Locale.ROOT).contains("refused"),
+            "no refusal");
+    }
+
+    static void journeyPlan() {
+        section("journey plan");
+
+        JourneyPlan plan = new JourneyPlan();
+        check("a fresh plan is empty", plan.isEmpty(), "not empty");
+        check("a fresh plan has no interrupted target", !plan.hasInterrupted(), "has one");
+
+        plan.setServer("6b6t.org");
+        plan.setDimension("minecraft:overworld");
+        plan.setInterrupted(1000, -2000, "stash");
+        plan.addPending(3000, 4000, "cluster");
+        plan.addPending(5000, 6000, "");
+
+        check("size counts interrupted plus pending", plan.size() == 3, "wrong size");
+        check("an interrupted target makes the plan non-empty", !plan.isEmpty(), "empty");
+        check("matches the same server and dimension", plan.matches("6b6t.org", "minecraft:overworld"), "no match");
+        check("does not match a different server", !plan.matches("2b2t.org", "minecraft:overworld"), "matched");
+        check("does not match a different dimension", !plan.matches("6b6t.org", "minecraft:the_nether"), "matched");
+
+        // A blank reason is replaced rather than saved as an empty string, so the chat line always reads.
+        check("a blank reason is defaulted", plan.pending().get(1).reason().equals("saved"), "not defaulted");
+
+        JourneyPlan round = JourneyPlan.fromTag(plan.toTag());
+        check("server survives a round trip", round.server().equals("6b6t.org"), "lost");
+        check("dimension survives a round trip", round.dimension().equals("minecraft:overworld"), "lost");
+        check("the interrupted target survives", round.hasInterrupted() && round.interrupted().x() == 1000, "lost");
+        check("pending targets survive", round.pending().size() == 2, "lost");
+        check("pending coordinates survive", round.pending().get(0).x() == 3000 && round.pending().get(0).z() == 4000, "wrong");
+        check("a restored plan still matches", round.matches("6b6t.org", "minecraft:overworld"), "no match");
+
+        // Bounded: a sweep must not grow the saved file without limit.
+        JourneyPlan big = new JourneyPlan();
+        for (int i = 0; i < JourneyPlan.MAX_PENDING + 50; i++) big.addPending(i, i, "x");
+        check("pending targets are capped", big.pending().size() == JourneyPlan.MAX_PENDING, "not capped");
+
+        // Tolerant decode: a nonsense tag yields an empty plan, not an exception.
+        JourneyPlan empty = JourneyPlan.fromTag(new NbtCompound());
+        check("a missing tag decodes to an empty plan", empty.isEmpty(), "not empty");
+        check("a decoded empty plan has no server", empty.server().isEmpty(), "has one");
+
+        check("describe mentions the target count", plan.describe().contains("3"), "no count");
+        check("an empty plan describes itself", empty.describe().equals("no saved route"), "wrong text");
     }
 
     static void targetPrioritisation() {

@@ -115,7 +115,7 @@ public class StorageNetwork extends Module {
 
         BlockPos target = container.pos;
 
-        if (ContainerHelper.isReachable(target)) {
+        if (ContainerHelper.isReachable(target) && ContainerHelper.withinReach(target, arrivalDistance.get())) {
             if (BaritoneHelper.AVAILABLE && BaritoneHelper.isPathing()) BaritoneHelper.stop();
             String error = StorageOperations.openContainerBlock(target);
             if (error == null) {

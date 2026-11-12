@@ -9,7 +9,7 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.7.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
@@ -22,9 +22,10 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 - `plannerTest` — `FlightPlanner` maths over packed chunk keys.
 - `coreLogicTest` — the pure-logic suite: elytra durability, the deployment state machine, flight-state
   classification, mending priorities, item classification, inventory planning, stash scoring, chunk
-  deduplication, persistence record recovery, target prioritisation, retry backoff (including the
+  deduplication, persistence record recovery and whole-database versioning, the cross-session
+  `JourneyPlan` snapshot, target prioritisation, retry backoff (including the
   bounded-deployment loop and the `DeploymentGovernor` regression), the exploration planner, survival
-  thresholds, the scheduler and the event bus. 196 assertions, no Minecraft classes, so it catches
+  thresholds, the scheduler and the event bus. 227 assertions, no Minecraft classes, so it catches
   arithmetic and state-machine regressions that would otherwise only appear mid-flight.
 - `storageLogicTest` — the storage suite: item classification, container layout, sort planning,
   simulated sort correctness, protection rules, deposit/withdraw/pull transfers, item routing, restock
@@ -39,14 +40,16 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
   history cursor and draft restore, the shortcut table, registry dispatch/aliases, per-subcommand
   permission levels, the confirmation gate, tab completion and the macro store. 86 assertions, pure.
 - `sixbtLogicTest` — the 6b6t suite: the server command catalogue and address check, the chat line
-  parser (vanilla/ranked senders, command echo, tpa requests), kit-request parsing (the `>lxkit` prefix
-  and the `bare-requests` rule), the `KitDeliveryMachine` state machine and every failure path including
+  parser (vanilla/ranked/bare `Name:`/`Name »` senders, command echo, tpa requests), kit-request parsing
+  (the `>lxkit` prefix and the `bare-requests` rule), the `KitDeliveryMachine` state machine and every
+  failure path including
   the 5s confirmation window, the bounded `KitRequestQueue`, `KitMessages` (defaults, overrides,
   placeholder rendering, `/msg` formatting), `KitRequestFlow` (which reply a request earns, and the
   access-before-kit-name order), `ChestKitSearch` (complete/partial/no-source), kit loadouts and their
-  parsing, the restock comparison, the TPS and hotspot parsers, the `TpaPolicy`, `KitRequestPolicy` and
-  the home book. 181 assertions, pure — which is what makes a bot that teleports and kills itself safe
-  to change.
+  parsing, the restock comparison, `KitSources` (kit-name-to-container normalisation and matching, and
+  the "a carried shulker renamed after the kit answers the request" rule), the TPS and hotspot parsers,
+  the `TpaPolicy`, `KitRequestPolicy` and the home book. 215 assertions, pure — which is what makes a bot
+  that teleports and kills itself safe to change.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
@@ -108,6 +111,9 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              DeploymentGovernor (bounded deploy/recover policy for
 │   │                              FlightController), BoundedLongSet (size-capped chunk-key set),
 │   │                              SurvivalStatus, RecordCodec (tolerant NBT list decoding),
+│   │                              DatabaseVersion (whole-database format policy: current / legacy /
+│   │                              too-new, so a future export is refused not half-applied),
+│   │                              JourneyPlan (the unfinished route snapshot that survives a restart),
 │   │                              StorageCategory, ItemClassifier, ContainerLayout, SortPlanner,
 │   │                              InventorySimulator, TransferPlanner, RestockPlanner, ShulkerInventory,
 │   │                              ProtectionRules, ItemRoutingEngine, OperationState, WorkflowEngine,
@@ -134,6 +140,7 @@ src/main/java/dev/basehunt/bhclient/
 │                                  cooldown + position), KitRequestPolicy (whitelist/blacklist/open),
 │                                  KitRequestFlow (which reply a request earns), KitMessages
 │                                  (configurable reply catalogue), ChestKitSearch (kit-in-container),
+│                                  KitSources (kit name <-> container name normalisation and match),
 │                                  KitLoadout / KitLoadoutRegistry / KitRestockPlan (kit-maker loadouts),
 │                                  HomeBook (homes + limit), TpaPolicy, TpsMonitor, HotspotInfo
 ├── modules/                     BaseHunter (v1), BaseHunterV2, NewChunks, StashFinder,
@@ -317,6 +324,15 @@ kit up. `ChestKitSource` is the one place that decides where a kit comes from (i
 containers); the client cannot read an unopened chest, so a never-opened container is reported as "not
 stocked", never as a false empty.
 
+**A kit can be an item list or a renamed container.** `KitLoadout` is the explicit form; the other form
+is a shulker box renamed after the kit (a box called `totem` answers `>lxkit totem`). `KitSources` owns
+the matching and is the only place that decides whether a kit name refers to a container: both sides are
+normalised (case, `§` codes, `_`→space, a trailing `shulker`/`shulker box`, a leading `kit `) and the
+name must be exact or followed by a non-alphanumeric separator, so `totems` never answers `totem`. When a
+kit resolves by name, `KitDeliveryService.setNameFilter` makes the delivery drop that stack instead of a
+loadout item; `KitBot.nameKits` (`shulker-kits`) gates the whole path. Keep `kitExists` in
+`handleDeliveryChat` the single place that decides servability, and keep it in step with `canServe`.
+
 **Persisted records decode tolerantly through `RecordCodec`.** Every store writes a `version` int and
 a list of record compounds; `fromTag` reads them via `RecordCodec.decodeList`, which skips an entry that
 is not a compound or whose decoder throws, and counts the skips. A single corrupt record must never cost
@@ -327,6 +343,25 @@ the recovery and versioning behaviour headlessly. When you add a store, use `Rec
 hand-rolled loop, bump the store's `DB_VERSION` when its record shape changes, add it to
 `DatabaseIO.SECTIONS`, and update the pinned list in `hardeningTest` — the coverage test fails the build
 if the last two are out of step.
+
+**A whole-database export is checked against `DatabaseVersion` before it is applied.** Per-record
+tolerance does not help when the *shape* of a section changed: `DatabaseIO.importAll` reads the
+export's `formatVersion` (note: not the per-store `version` key `RecordCodec.readVersion` reads) and
+classifies it through `DatabaseVersion.verdict`. A `LEGACY` file is applied and reported as upgraded; a
+`TOO_NEW` file is **refused** — importing a format this build cannot fully read would silently drop the
+fields it introduced, which is worse than declining. The verdict is kept in `DatabaseIO.lastVerdict()`
+so `/bh database import` can say *why* it did nothing, and `/bh database version` shows it. Bump
+`DatabaseVersion.CURRENT` only when a whole-database section shape changes.
+
+**An unfinished route outlives the session that started it.** `BaseHunterV2` snapshots the target in
+flight and the pending queue into a `JourneyPlan` (via `ExplorationStore.journey`) on disconnect,
+dimension change and pause; `remember-route` gates it and `saveJourney` no-ops unless the route is
+`started`. A plan is stamped with the server address and dimension it was planned in and only restored
+when both still match, so a portal cannot send the player toward coordinates that mean nothing in the
+new world — save it with `saveJourneyFor(previous)` *before* `lastDimension` is overwritten. It is
+cleared when a route finishes (`stopAndMaybeDisconnect`) or is stopped on purpose (`stop`), so a stale
+route is never replayed; `restoreJourney` only re-queues coordinates, so the planner stays the single
+source of truth for what to fly to. `JourneyPlan` is pure NBT and capped at `MAX_PENDING` targets.
 
 **A listener that throws becomes a `SYSTEM_ERROR` event.** `AutomationBus.reportListenerFailure` catches
 the exception, logs it, and republishes a `SYSTEM_ERROR` event so the failure is visible without taking

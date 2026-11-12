@@ -81,6 +81,7 @@ public class SixbtMenuScreen extends WindowScreen {
 
         add(theme.label("Status: " + bot.deliveryStatusLine()));
         add(theme.label("Claiming: " + bot.statusLine()));
+        add(theme.label("Replies are whispered with /msg, never in public chat."));
 
         var actions = add(theme.horizontalList()).expandX().widget();
 
@@ -99,6 +100,16 @@ public class SixbtMenuScreen extends WindowScreen {
 
         WButton settings = actions.add(theme.button("Settings")).expandX().widget();
         settings.action = () -> openModule(KitBot.class);
+
+        var diagnoseRow = add(theme.horizontalList()).expandX().widget();
+        WButton doctor = diagnoseRow.add(theme.button("Self-check (doctor)")).expandX().widget();
+        doctor.action = () -> {
+            for (String line : bot.diagnose()) add(theme.label("kit: " + line));
+        };
+        WButton shulkers = diagnoseRow.add(theme.button("Carried Shulkers")).expandX().widget();
+        shulkers.action = () -> {
+            for (String line : bot.describeCarriedShulkers()) add(theme.label("kit: " + line));
+        };
     }
 
     private void accessSection() {

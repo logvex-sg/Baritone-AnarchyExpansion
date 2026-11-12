@@ -3,6 +3,81 @@
 All notable changes to the Baritone Anarchy Expansion. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [2.7.0] — 2026-11-12
+
+The persistence release. Alongside the kit-bot delivery fixes, two things the addon promised but did
+not actually do are now real: an imported database is checked against the format this build
+understands, and a route survives the session that started it.
+
+### Fixed
+
+- **The kit bot no longer abandons every delivery seconds after it starts.** A delivery begins with a
+  `/tpa` to a requester who is, by definition, out of render range. The runtime read "not in the loaded
+  world" as "the requester left" and failed the delivery after five seconds — before the teleport could
+  land — so the bot appeared to do nothing at all. A missing requester now only counts as a departure
+  once they have actually been seen (i.e. after the teleport lands), via the new
+  `RequesterPresence`. Presence, not proximity, is what fails a delivery, so a requester who steps a few
+  blocks away to pick items up is not treated as gone either.
+- **A carried shulker box renamed after a kit now wins over a registered loadout.** When both exist (a
+  `totem` loadout *and* a `totem` shulker box, the reported setup), the box is the concrete stock the bot
+  can drop as-is, so it is used for the delivery instead of the item loadout.
+- **Removed settings that did nothing.** `reverse-on-arrival`, `stop-on-stash` (Base Hunter v1),
+  `unsafe-altitude-margin`, `baritone-pregen`, `pregen-leg-length` (Base Hunter v2), `repair-armor`
+  (Mending) and `storage-network → arrival-distance` were declared but never read. The first six are gone;
+  `arrival-distance` is now actually enforced.
+
+### Added
+
+- **`/bh kit doctor` (and `kit doctor` in the terminal, and a *Self-check* button in the 6b6t menu).**
+  Prints why a kit request would or would not be served right now: whether delivery is on, who may
+  request, which replies are whispered, the shulker boxes carried, the loadouts registered, and a
+  per-kit readiness line. This turns the commonest "the bot does not react" causes into one command.
+- All kit-bot replies are whispered with `/msg <player> …` and never posted in public chat; the menu now
+  states this and `doctor` reports it.
+- **The route survives a restart.** Base Hunter V2's pending queue and the target in flight were held in
+  memory only, so quitting the game, switching server or crossing a portal mid-flight threw the route
+  away and everything had to be set up again by hand. The route is now snapshotted on disconnect,
+  dimension change and pause (`BaseHunterV2 → remember-route`, on by default), saved with the server
+  address and dimension it belongs to, and restored with `/bh resume` — or automatically at launch when
+  `auto-start` is on, since a saved route is resumed before a fresh sweep is started. The snapshot is
+  capped at 256 targets and cleared when a route finishes or is stopped on purpose, so a stale route is
+  never replayed. The new `JourneyPlan` value is pure NBT and covered headlessly; `/bh route saved` shows
+  it and `/bh route forget` discards it.
+- **Importing a database written by a newer build is refused instead of half-applied.** `formatVersion`
+  was written on export but never checked on import, so a file from a later build was read with whatever
+  this build happened to understand, silently dropping the fields it introduced. `DatabaseVersion` now
+  classifies a whole-database tag as current, legacy (older — still readable, reported as upgraded) or
+  too-new (refused, with a chat message and a log line). A file with no version header is treated as
+  current, so a hand-made tag still imports. `/bh database version` reports the current format and the
+  last import verdict; `/bh database status` now prints the format version too.
+- **`/bh route remove <index>`** removes one waypoint by its 1-based index, matching the order `/bh route
+  list` prints. Previously the only way to drop a single waypoint was to clear them all.
+
+### Documentation
+
+- `docs/GUIDE.md` documents the `/bh kit doctor` self-check and the whisper-only replies.
+- `docs/GUIDE.md` documents the database format versions, the cross-session route memory, and the new
+  `/bh route remove`, `/bh route saved`, `/bh route forget` and `/bh database version` commands.
+
+- **The kit bot now reacts to a kit stocked as a renamed shulker box.** The common 6b6t setup — a
+  shulker box renamed after the kit (a box called `totem` for `>lxkit totem`) — was not recognised: the
+  bot parsed the request, found no *loadout* of that name, and answered `Kit doesnt exist.`. A carried
+  shulker box whose name matches the request is now served directly (drop the box, confirm, reset), with
+  no loadout to configure. Toggle with `kit-bot → shulker-kits` (on by default); `/bh kit shulkers` lists
+  the boxes carried and the kit each one answers.
+- **Kit names and container names are matched after normalisation.** Case, `§` colour codes, `_`/spaces,
+  a trailing `shulker`/`shulker box`, and a leading `kit ` are ignored, so `§6Totem`,
+  `totem_shulker_box` and `kit totem` all answer `>lxkit totem`. A near-miss (`totems`) still does not
+  match, so a typo delivers nothing rather than the wrong kit.
+- **Bare `Name: message` and `Name » message` chat lines are now parsed.** A server that writes the
+  sender without a `<...>` or `[Rank]` wrapper previously produced no sender, so requests on those
+  servers were silently ignored. The sender is only accepted when it reads as a username, so an ordinary
+  sentence containing a colon is not mistaken for a speaker.
+- The kit-maker docs stated the cooldown template used `{seconds}`; the code substitutes `{minutes}`.
+  Docs corrected.
+
 ## [2.6.1] — 2026-11-12
 
 The rename release. The project is now **Baritone Anarchy Expansion** to match the repository

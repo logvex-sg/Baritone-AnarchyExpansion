@@ -297,6 +297,12 @@ public class BaseHuntingHud extends HudElement {
             lines.add("V2 status: " + (v2.isPaused() ? "paused" : "flying"));
         }
 
+        // Only shown when nothing is flying and a route from an earlier session is waiting to be resumed.
+        if (showV2Target.get() && v2 != null && v2.isActive() && !v2.isStarted()) {
+            String saved = v2.savedJourneySummary();
+            if (!saved.equals("no saved route")) lines.add("Saved route: " + saved);
+        }
+
         if (showElytra.get() && mc.player != null) {
             lines.add("Elytra: " + dev.basehunt.bhclient.utils.ElytraManager.status());
             lines.add("Spare elytras: %d".formatted(dev.basehunt.bhclient.utils.ElytraManager.spareCount()));

@@ -329,6 +329,10 @@ When the current region stops producing discoveries (`expand-when-stalled` after
 the engine pushes a frontier waypoint outward (`frontier-step`) and continues, instead of sweeping the
 same dead area forever.
 
+A route also outlives the session that started it. See [Route memory across
+sessions](#route-memory-across-sessions): the pending queue and the target in flight are snapshotted on
+disconnect, dimension change and pause, then offered again next launch.
+
 ### Target prioritisation
 
 Every candidate target is scored and ranked. A revisit penalty demotes locations already discovered,
@@ -574,14 +578,14 @@ the terminal). The kinds are:
 | `grabbing` | `Grabbing the kit, please wait.` | The request was accepted; the bot is fetching the kit. |
 | `not_whitelisted` | `Not whitelisted (contact logvex).` | The requester is not on the allow-list (or is blocked). |
 | `unknown_kit` | `Kit doesnt exist.` | No loadout is registered under that name. |
-| `cooldown` | `Error, {seconds} minute cooldown active.` | The requester asked again inside the cooldown. |
+| `cooldown` | `Error, {minutes} minute cooldown active.` | The requester asked again inside the cooldown. |
 | `queue_full` | `Error, too many kits (max {max}).` | The queue is full. |
 | `queued` | `You are in the queue, please wait. You are in place {place}.` | Accepted, with their queue position. |
 | `delivered` | `Kit delivered.` | Sent after the confirmation window. |
 | `failed` | `Error, the delivery could not be completed.` | The delivery failed (timeout, requester left). |
 
-Templates may use `{player}`, `{kit}`, `{place}`, `{seconds}` and `{max}`; an unknown placeholder is
-left as-is rather than breaking the reply. Edit one with `/bh kit message cooldown Error, wait {seconds}
+Templates may use `{player}`, `{kit}`, `{place}`, `{minutes}` and `{max}`; an unknown placeholder is
+left as-is rather than breaking the reply. Edit one with `/bh kit message cooldown Error, wait {minutes}
 minutes.` — the token is the kind name and the rest of the line is the template.
 
 ##### Storage and the delivery
@@ -592,6 +596,51 @@ the loadout in your own inventory and in nearby registered containers within `ch
 the client until that chest has been opened, so a container the bot has never opened reads as empty and
 cannot be searched — the bot reports "not stocked" rather than pretending. Open your storage once (the
 addon remembers it) and it can be used from then on.
+
+##### Two ways to stock a kit
+
+There are two ways to tell the bot what a kit contains, and they can be mixed freely.
+
+**1. A loadout** — an explicit item list, edited with `/bh kit loadout …` or the *Edit* button in the
+menu. Best for a kit you assemble from loose items (a `pvp` kit of netherite + gapples + a totem).
+
+**2. A named shulker box** — pre-pack a shulker box, rename it after the kit, and carry it. The box
+name *is* the kit name. This is the quickest way to make a kit: a box called `totem` answers
+`>lxkit totem` with no loadout to configure.
+
+```
+Box renamed "totem"        ->  a request for  >lxkit totem   is served by dropping that box
+Box renamed "totem shulker" ->  same
+Box renamed "§6Totem"      ->  same  (colour codes are ignored)
+Box renamed "totem_2"      ->  same  (underscores read as spaces; "2" is a separator)
+```
+
+The kit name and the box name are matched after both are **normalised**, so the same kit answers to
+every way you might write it:
+
+| You write | Normalises to | Notes |
+| --- | --- | --- |
+| `Totem` | `totem` | case is ignored |
+| `§6totem` | `totem` | `§` colour/format codes are stripped |
+| `totem_shulker_box` | `totem` | `_` becomes a space; a trailing `shulker`/`shulker box` is removed |
+| `totem 2` / `totem-2` | `totem 2` | a number after the name still matches `totem` |
+| `kit totem` | `totem` | a leading `kit ` is removed |
+
+A near-miss does **not** match: a box called `totems` will not answer `>lxkit totem`, so an accidental
+typo delivers nothing rather than the wrong kit. The box must be a shulker box (any colour) and the bot
+must be **carrying** it — a delivery drops the box it holds. Use `/bh kit shulkers` to list the boxes
+you are carrying and the kit each one answers, and `/bh kit source <kit>` to check one kit.
+
+Name-based kits are controlled by `kit-bot → shulker-kits` (on by default). Turn it off to require an
+explicit loadout for every kit. When a request name is neither a loadout nor a carried shulker, the bot
+replies `unknown_kit` (`Kit doesnt exist.`) — that reply, rather than silence, is the usual sign the
+name did not match.
+
+##### The kit name in the request
+
+The requested kit is the token after the prefix: `>lxkit totem` requests the kit `totem` (a prefix
+ending in `kit` implies the keyword, so no second `kit` is needed). `bare-requests` controls whether a
+non-`kit` prefix needs the keyword.
 
 Each request enters a bounded queue (`queue-capacity`, default 3) with a per-player cooldown
 (`request-cooldown`, default 600s = 10 minutes), so a spammer cannot flood it and cannot be served
@@ -715,7 +764,7 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh events` | Show the most recent automation events |
 | `/bh start` | Enable and start Base Hunter V2 in adaptive mode |
 | `/bh stop` | Stop the autopilot, or cancel Baritone pathing |
-| `/bh pause` / `/bh resume` | Pause / resume the active route |
+| `/bh pause` / `/bh resume` | Pause / resume the active route. `resume` also restarts a route remembered from an earlier session |
 | `/bh fly <x> <z>` | Enable Base Hunter v1 and start a route to those coordinates |
 | `/bh baritone` / `status` / `terms` / `stop` | Baritone availability, version and flight state; accept its elytra terms; cancel pathing |
 
@@ -773,16 +822,20 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh route list` | List route waypoints |
 | `/bh route add` | Add your current position as a waypoint |
 | `/bh route add-at <x> <z>` | Add a specific position as a waypoint |
+| `/bh route remove <index>` | Remove one waypoint by its 1-based index |
 | `/bh route clear` | Remove all waypoints |
+| `/bh route saved` | Show the route remembered from an earlier session |
+| `/bh route forget` | Forget the remembered route |
 
 ### Database and webhooks
 
 | Command | What it does |
 | --- | --- |
-| `/bh database status` | Record counts and integrity (records skipped on load) |
+| `/bh database status` | Record counts, format version and integrity (records skipped on load) |
 | `/bh database export` | Export every store to a file |
-| `/bh database import` | Import an export file |
+| `/bh database import` | Import an export file (refuses a newer format) |
 | `/bh database copy` / `paste` | Export/import through the clipboard |
+| `/bh database version` | Show the database format version and the last import verdict |
 | `/bh webhook test` | Send a test message to the configured webhook |
 
 ### Automation, tasks, kits and chat
@@ -858,6 +911,29 @@ skipped, never fatal** — one bad entry cannot cost you the rest of the databas
 skipped on the last load is reported by `/bh database status` and in the management screen's Database
 section, and logged at startup. Meteor itself also writes a timestamped `.backup.nbt` if a whole file
 fails to parse.
+
+### Database format versions
+
+Each store carries a `version` key, and the whole-database export carries a `formatVersion` key
+(currently **v3**). The rules are:
+
+- a store written by an **older** build still loads — the decoder ignores fields it does not know and
+  fills the rest with defaults;
+- a whole-database file written by a **newer** build is **refused** on import rather than half-applied,
+  because importing a format we cannot fully read would silently drop the fields it introduced. The
+  refusal is reported in chat and logged; `/bh database version` shows the current format and the
+  verdict of the last import;
+- a file with no version header at all is treated as current, so a hand-made tag is not rejected.
+
+### Route memory across sessions
+
+Base Hunter V2 remembers the route it was flying when the game closed, the server changed or a portal
+was crossed. The target in flight and the targets still queued are saved with the server address and
+dimension they belong to, so a plan for the overworld is never offered after a portal. The next session
+can pick it up with `/bh resume` (or automatically when `auto-start` is on, since a saved route is
+resumed before a fresh sweep is started). The snapshot is capped at 256 targets and is cleared when a
+route finishes or is stopped on purpose, so a stale route is never replayed. `/bh route saved` shows it
+and `/bh route forget` discards it.
 
 In-memory growth is bounded: the chunk scanners cap their tracked-chunk sets (200k keys, oldest-first
 eviction) and the player tracker caps its per-server entries and sightings, so a very long session

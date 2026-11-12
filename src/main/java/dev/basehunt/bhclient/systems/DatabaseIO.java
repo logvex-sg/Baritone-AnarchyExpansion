@@ -27,7 +27,15 @@ import java.nio.file.Files;
  */
 public final class DatabaseIO {
     private static final String EXPORT_FILE_NAME = "base-hunting-export.nbt";
-    private static final int FORMAT_VERSION = 3;
+    private static final int FORMAT_VERSION = dev.basehunt.bhclient.core.logic.DatabaseVersion.CURRENT;
+
+    /**
+     * Verdict of the last import attempt, so the caller can report a refusal or an upgrade rather than a bare
+     * section count. Starts as {@link dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict#CURRENT} so a
+     * never-imported session reads sane.
+     */
+    private static volatile dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict lastVerdict =
+        dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict.CURRENT;
 
     /**
      * One persisted store: the key it is stored under and how to reach it. Keeping this as data (rather
@@ -61,7 +69,7 @@ public final class DatabaseIO {
     /** Builds one NBT tag holding every store's data. */
     public static NbtCompound exportAll() {
         NbtCompound root = new NbtCompound();
-        root.putInt("formatVersion", FORMAT_VERSION);
+        root.putInt(dev.basehunt.bhclient.core.logic.DatabaseVersion.KEY, FORMAT_VERSION);
         root.putLong("exportedAt", java.lang.System.currentTimeMillis());
 
         for (Section section : SECTIONS) put(root, section.key(), section.store().get());
@@ -78,14 +86,38 @@ public final class DatabaseIO {
     /**
      * Applies an exported tag. Stores with no matching section are left as they are, and every store is
      * wrapped so a malformed section cannot abort the whole import.
+     *
+     * <p>A tag written by a newer build is refused outright (see {@link DatabaseVersion}): applying a format
+     * we do not understand would silently drop the fields it introduced. An older tag is applied, and the
+     * verdict is remembered so the caller can report that it was upgraded.
+     *
+     * @return the number of sections applied, or 0 when the import was refused
      */
     public static int importAll(NbtCompound root) {
-        int applied = 0;
-        if (root == null) return 0;
+        if (root == null) {
+            lastVerdict = dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict.CURRENT;
+            return 0;
+        }
 
+        var verdict = dev.basehunt.bhclient.core.logic.DatabaseVersion.verdictOf(root);
+        lastVerdict = verdict;
+
+        if (verdict == dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict.TOO_NEW) {
+            BaseHuntingAddon.LOG.warn("Refused to import a database written by a newer build: {}",
+                dev.basehunt.bhclient.core.logic.DatabaseVersion.describe(
+                    dev.basehunt.bhclient.core.logic.DatabaseVersion.versionOf(root)));
+            return 0;
+        }
+
+        int applied = 0;
         for (Section section : SECTIONS) applied += apply(section.key(), root, section.store().get());
 
         return applied;
+    }
+
+    /** Verdict of the last {@link #importAll} / {@link #importFromFile} / {@link #importFromClipboard} call. */
+    public static dev.basehunt.bhclient.core.logic.DatabaseVersion.Verdict lastVerdict() {
+        return lastVerdict;
     }
 
     private static int apply(String key, NbtCompound root, meteordevelopment.meteorclient.systems.System<?> system) {

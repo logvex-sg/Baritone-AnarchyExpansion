@@ -2,6 +2,7 @@ package dev.basehunt.bhclient.systems;
 
 import dev.basehunt.bhclient.core.sixbt.ChestKitSearch;
 import dev.basehunt.bhclient.core.sixbt.KitLoadout;
+import dev.basehunt.bhclient.core.sixbt.KitSources;
 import dev.basehunt.bhclient.utils.ServerUtils;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.LootableContainerBlockEntity;
@@ -171,5 +172,67 @@ public final class KitChestSource {
     /** A one-line report for chat and the terminal. */
     public static String describe(KitLoadout loadout, int radius) {
         return find(loadout, radius).summary();
+    }
+
+    // Name-based sourcing: a shulker box renamed after the kit answers the request by name.
+
+    /** Every stack the bot can see by name: its main inventory first, then registry-observed container stacks. */
+    public static List<KitSources.NamedStack> namedStacks(int radius) {
+        List<KitSources.NamedStack> stacks = new ArrayList<>(namedStacksInInventory());
+        stacks.addAll(observedNamedStacks(radius));
+        return stacks;
+    }
+
+    /** The named stacks in the player's main inventory, which are the ones a delivery can actually drop. */
+    public static List<KitSources.NamedStack> namedStacksInInventory() {
+        List<KitSources.NamedStack> stacks = new ArrayList<>();
+        MinecraftClient mc = ServerUtils.mc();
+        if (mc == null || mc.player == null) return stacks;
+
+        var inventory = mc.player.getInventory();
+        for (int slot = 0; slot < net.minecraft.entity.player.PlayerInventory.MAIN_SIZE; slot++) {
+            ItemStack stack = inventory.getStack(slot);
+            if (stack.isEmpty()) continue;
+            stacks.add(new KitSources.NamedStack(Registries.ITEM.getId(stack.getItem()).toString(),
+                stack.getName().getString(), stack.getCount()));
+        }
+        return stacks;
+    }
+
+    /** Named stacks from the registry's last-observed container contents within {@code radius}. */
+    private static List<KitSources.NamedStack> observedNamedStacks(int radius) {
+        List<KitSources.NamedStack> stacks = new ArrayList<>();
+        MinecraftClient mc = ServerUtils.mc();
+        if (mc == null || mc.player == null) return stacks;
+
+        BlockPos origin = mc.player.getBlockPos();
+        StorageRegistry registry = StorageRegistry.get();
+        if (registry == null) return stacks;
+
+        for (StorageRegistry.Container container : registry.forCurrentServer()) {
+            if (container == null || container.pos == null) continue;
+            if (!container.dimension.equals(ServerUtils.dimension())) continue;
+            if (!container.pos.isWithinDistance(origin, radius)) continue;
+            for (StorageRegistry.Observed observed : container.lastContents) {
+                if (observed == null || observed.itemId() == null) continue;
+                stacks.add(new KitSources.NamedStack(observed.itemId(), observed.name(), observed.count()));
+            }
+        }
+        return stacks;
+    }
+
+    /** The first shulker box renamed after {@code kit} that the bot can see, or empty. */
+    public static java.util.Optional<KitSources.NamedStack> findShulkerByName(String kit, int radius) {
+        return KitSources.findShulkerByName(namedStacks(radius), kit);
+    }
+
+    /** True when a shulker box renamed after {@code kit} is carried or in a nearby registered container. */
+    public static boolean hasNamedShulker(String kit, int radius) {
+        return findShulkerByName(kit, radius).isPresent();
+    }
+
+    /** The shulker boxes the bot is carrying that are renamed after {@code kit} (the droppable sources). */
+    public static java.util.Optional<KitSources.NamedStack> carriedShulkerByName(String kit) {
+        return KitSources.findShulkerByName(namedStacksInInventory(), kit);
     }
 }

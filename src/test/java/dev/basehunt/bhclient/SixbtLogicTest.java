@@ -11,6 +11,8 @@ import dev.basehunt.bhclient.core.sixbt.KitRequestFlow;
 import dev.basehunt.bhclient.core.sixbt.KitRequestPolicy;
 import dev.basehunt.bhclient.core.sixbt.KitRequestQueue;
 import dev.basehunt.bhclient.core.sixbt.KitRestockPlan;
+import dev.basehunt.bhclient.core.sixbt.KitSources;
+import dev.basehunt.bhclient.core.sixbt.RequesterPresence;
 import dev.basehunt.bhclient.core.sixbt.SixbtChat;
 import dev.basehunt.bhclient.core.sixbt.SixbtCommand;
 import dev.basehunt.bhclient.core.sixbt.TpaPolicy;
@@ -46,6 +48,7 @@ public class SixbtLogicTest {
         chatParsing();
         kitRequests();
         deliveryMachine();
+        requesterPresence();
         requestQueue();
         loadouts();
         restock();
@@ -56,6 +59,7 @@ public class SixbtLogicTest {
         kitMessages();
         requestFlow();
         chestSearch();
+        kitSources();
         homeBook();
 
         System.out.println();
@@ -104,6 +108,25 @@ public class SixbtLogicTest {
 
         SixbtChat.Line plain = SixbtChat.parse("server restarting soon");
         check("plain line has no sender", !plain.hasSender(), "sender found");
+
+        // A sender written without a rank tag: "Name: body" or "Name » body".
+        SixbtChat.Line bare = SixbtChat.parse("Steve: !kit pvp");
+        check("bare colon sender", bare.sender().equals("Steve"), bare.sender());
+        check("bare colon body", bare.body().equals("!kit pvp"), bare.body());
+
+        SixbtChat.Line arrow = SixbtChat.parse("Steve \u00bb hello there");
+        check("arrow sender", arrow.sender().equals("Steve"), arrow.sender());
+        check("arrow body", arrow.body().equals("hello there"), arrow.body());
+
+        SixbtChat.Line sentence = SixbtChat.parse("server restarting soon: be careful");
+        check("sentence with colon has no sender", !sentence.hasSender(), sentence.sender());
+
+        check("bare colon request found",
+            SixbtChat.findRequest("Steve: !kit pvp", List.of("!"), true, List.of("pvp")).isPresent(),
+            "not found");
+        check("arrow request found",
+            SixbtChat.findRequest("Steve \u00bb >lxkit totem", List.of(">lxkit"), true, List.of("totem"))
+                .isPresent(), "not found");
 
         Optional<String> tpa = SixbtChat.findTpaRequest("Steve wants to teleport to you. /tpy Steve /tpn Steve");
         check("tpa requester found", tpa.isPresent() && tpa.get().equals("Steve"), tpa.toString());
@@ -247,6 +270,42 @@ public class SixbtLogicTest {
         check("cancel fails", cancelled.state() == KitDeliveryMachine.State.FAILED, cancelled.state().name());
         cancelled.reset();
         check("reset returns to idle", cancelled.state() == KitDeliveryMachine.State.IDLE, cancelled.state().name());
+    }
+
+    // Requester presence
+
+    private static void requesterPresence() {
+        section("requester presence");
+
+        // The bug this guards: before the teleport lands the requester is out of range, and treating that as
+        // "left" aborted every delivery a few seconds after it began.
+        RequesterPresence p = new RequesterPresence(3);
+        check("not seen yet is not gone", !p.observe(false), "gone before being seen");
+        check("still not gone after many unseen ticks", !p.observe(false) && !p.observe(false)
+            && !p.observe(false) && !p.observe(false), "gave up before ever seeing the requester");
+        check("has not been seen", !p.hasBeenSeen(), "claims to have seen");
+
+        // Seen, then gone for longer than the window: that is a real departure.
+        check("seen resets the missing counter", !p.observe(true), "gone while visible");
+        check("has been seen", p.hasBeenSeen(), "not marked seen");
+        check("briefly missing is not gone", !p.observe(false) && !p.observe(false), "gave up too early");
+        boolean goneNow = p.observe(false) | p.observe(false);
+        check("gone after the window", goneNow, "never reported gone");
+
+        // Coming back clears the gone state.
+        check("reappearing is not gone", !p.observe(true), "still gone after returning");
+        check("missing counter reset on return", !p.observe(false), "counted a stale miss");
+
+        // Reset for a new delivery forgets the previous one.
+        p.reset();
+        check("reset forgets the sighting", !p.hasBeenSeen(), "still seen after reset");
+        check("unseen after reset is not gone", !p.observe(false), "gone after reset");
+
+        // A zero window is clamped so a one-tick flicker cannot fail a delivery.
+        RequesterPresence clamped = new RequesterPresence(0);
+        clamped.observe(true);
+        check("zero window is clamped to at least one tick",
+            !clamped.observe(false) && clamped.observe(false), "clamp failed");
     }
 
     // Request queue
@@ -606,6 +665,58 @@ public class SixbtLogicTest {
             "non-zero");
         check("container label defaults", new ChestKitSearch.Container("", 0, 0, 0, List.of()).label()
             .equals("container"), "not defaulted");
+    }
+
+    // Name-based kit sources (shulker renamed after the kit)
+
+    private static void kitSources() {
+        section("kit name sources");
+
+        check("plain shulker id", KitSources.isShulkerId("minecraft:shulker_box"), "not a shulker");
+        check("coloured shulker id", KitSources.isShulkerId("minecraft:red_shulker_box"), "not a shulker");
+        check("chest is not a shulker", !KitSources.isShulkerId("minecraft:chest"), "wrongly a shulker");
+
+        check("normalize lowercase", KitSources.normalize("Totem").equals("totem"), KitSources.normalize("Totem"));
+        check("normalize colour code", KitSources.normalize("\u00a76Totem").equals("totem"),
+            KitSources.normalize("\u00a76Totem"));
+        check("normalize underscores", KitSources.normalize("totem_shulker_box").equals("totem"),
+            KitSources.normalize("totem_shulker_box"));
+        check("normalize shulker suffix", KitSources.normalize("totem shulker").equals("totem"),
+            KitSources.normalize("totem shulker"));
+        check("normalize shulker box suffix", KitSources.normalize("totem Shulker Box").equals("totem"),
+            KitSources.normalize("totem Shulker Box"));
+        check("normalize kit prefix", KitSources.normalize("kit totem").equals("totem"),
+            KitSources.normalize("kit totem"));
+        check("normalize blank", KitSources.normalize("  ").isEmpty(), KitSources.normalize("  "));
+
+        check("exact match", KitSources.matches("totem", "totem"), "no match");
+        check("case-insensitive match", KitSources.matches("totem", "Totem"), "no match");
+        check("colour code match", KitSources.matches("totem", "\u00a7cTotem"), "no match");
+        check("shulker suffix match", KitSources.matches("totem", "totem shulker box"), "no match");
+        check("numbered match", KitSources.matches("totem", "totem 2"), "no match");
+        check("separator match", KitSources.matches("totem", "totem-2"), "no match");
+        check("near-miss rejected", !KitSources.matches("totem", "totems"), "wrongly matched");
+        check("different kit rejected", !KitSources.matches("totem", "pvp"), "wrongly matched");
+        check("empty kit rejected", !KitSources.matches("", "totem"), "wrongly matched");
+        check("empty name rejected", !KitSources.matches("totem", ""), "wrongly matched");
+
+        check("username check", KitSources.isUsername("Steve"), "rejected");
+        check("username rejects spaces", !KitSources.isUsername("Steve Smith"), "accepted");
+        check("username rejects sentence", !KitSources.isUsername("server restarting"), "accepted");
+
+        List<KitSources.NamedStack> stacks = List.of(
+            new KitSources.NamedStack("minecraft:chest", "junk", 1),
+            new KitSources.NamedStack("minecraft:shulker_box", "totem", 1),
+            new KitSources.NamedStack("minecraft:red_shulker_box", "pvp shulker", 1));
+
+        check("find shulker by name",
+            KitSources.findShulkerByName(stacks, "totem").isPresent(), "not found");
+        check("find shulker normalises",
+            KitSources.findShulkerByName(stacks, "pvp").isPresent(), "not found");
+        check("named non-shulker not a shulker kit",
+            KitSources.findShulkerByName(List.of(new KitSources.NamedStack("minecraft:chest", "totem", 1)),
+                "totem").isEmpty(), "found a chest");
+        check("missing name is empty", KitSources.findShulkerByName(stacks, "build").isEmpty(), "found");
     }
 
     // Home book

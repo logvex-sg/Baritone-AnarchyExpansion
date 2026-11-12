@@ -183,29 +183,10 @@ public class BaseHunterV2 extends Module {
         .build()
     );
 
-    private final Setting<Integer> unsafeAltitudeMargin = sgFlight.add(new IntSetting.Builder()
-        .name("unsafe-altitude-margin")
-        .description("Do not attempt a launch when the player is this close to the world ceiling.")
-        .defaultValue(4)
-        .min(1)
-        .sliderRange(1, 64)
-        .build()
-    );
-
-    private final Setting<Boolean> useBaritonePregen = sgFlight.add(new BoolSetting.Builder()
-        .name("baritone-pregen")
-        .description("Use Baritone to pre-generate chunks along the next leg, if Baritone is installed.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Integer> pregenLegLength = sgFlight.add(new IntSetting.Builder()
-        .name("pregen-leg-length")
-        .description("How far ahead to pre-generate.")
-        .defaultValue(512)
-        .min(128)
-        .sliderRange(128, 4096)
-        .visible(() -> useBaritonePregen.get())
+    private final Setting<Boolean> rememberRoute = sgFlight.add(new BoolSetting.Builder()
+        .name("remember-route")
+        .description("Save the unfinished route and restore it after a restart, on the same server and dimension.")
+        .defaultValue(true)
         .build()
     );
 
@@ -610,6 +591,10 @@ public class BaseHunterV2 extends Module {
         ElytraController.disable();
         releaseControl();
         if (flight != null) flight.setWantsFlight(false);
+
+        // Snapshot the route before the module forgets it, so re-enabling can resume where this left off.
+        saveJourney();
+
         current = null;
         started = false;
         awaitingRedeploy = false;
@@ -631,6 +616,11 @@ public class BaseHunterV2 extends Module {
         if (!waitingForWorld) return;
 
         waitingForWorld = false;
+
+        // With auto-start on, an unfinished route from a previous session is picked up first, so an interrupted
+        // journey continues by itself rather than being replaced by a fresh sweep.
+        if (autoStart.get() && !savedJourneySummary().equals("no saved route") && startRestoring()) return;
+
         start();
     }
 
@@ -638,6 +628,7 @@ public class BaseHunterV2 extends Module {
     private void onGameLeft(GameLeftEvent event) {
         // The world and player are gone, so no flight can continue. Stop cleanly and drop the control lease
         // rather than leaving a stale owner holding movement through the disconnect.
+        saveJourney();
         releaseControl();
         if (flight != null) flight.onDisconnected();
         if (current != null) interruptedTarget = current;
@@ -663,6 +654,10 @@ public class BaseHunterV2 extends Module {
 
         if (previous == null) return;
 
+        // Snapshot while `lastDimension` still holds the old value, so the saved plan is stamped with the
+        // dimension it was actually planned in, not the one just entered.
+        saveJourneyFor(previous);
+
         if (flight != null) flight.onDimensionChanged();
         ElytraController.disable();
 
@@ -680,15 +675,29 @@ public class BaseHunterV2 extends Module {
 
     /** Begins the hunt. Called by auto-start and the {@code /bh v2 start} command. */
     public void start() {
+        startInternal(false);
+    }
+
+    /**
+     * Begins the hunt from a saved route when one exists for this server and dimension, otherwise starts a
+     * fresh sweep. Used by {@code /bh resume} so a restart can pick up an unfinished route in one command.
+     *
+     * @return true when a saved route was restored
+     */
+    public boolean startRestoring() {
+        return startInternal(true);
+    }
+
+    private boolean startInternal(boolean restore) {
         if (ServerUtils.mc().player == null || ServerUtils.mc().world == null) {
             waitingForWorld = true;
-            return;
+            return false;
         }
 
         if (!ElytraManager.hasElytraEquipped() && !ElytraManager.equipBest()) {
             error("No elytra found. Any durability of elytra works, but you need at least one.");
             if (abortWithoutElytra.get()) toggle();
-            return;
+            return false;
         }
 
         // Refuse to start a journey the carried elytras cannot finish, rather than stranding the player mid-map.
@@ -697,7 +706,7 @@ public class BaseHunterV2 extends Module {
             error("Equipment check failed: %s.", invalid);
             publish(AutomationEvent.Type.ELYTRA_MISSING, java.util.Map.of("reason", invalid));
             if (abortWithoutElytra.get()) toggle();
-            return;
+            return false;
         }
 
         started = true;
@@ -721,22 +730,25 @@ public class BaseHunterV2 extends Module {
         if (!ElytraController.available()) {
             error("Could not start Meteor's Elytra Fly.");
             toggle();
-            return;
+            return false;
         }
 
         // The flight controller owns deployment from here; it will launch on the next tick. Enable now so the
         // first frame does not stall waiting for a tick.
         ElytraController.enable(effectiveCruiseY(), true);
 
+        int restored = restore ? restoreJourney() : 0;
+
         if (chatFeedback.get()) {
             info("Base Hunter V2 started. Elytra: (highlight)%s(default).", ElytraManager.status());
+            if (restored > 0) info("Resumed a saved route: (highlight)%d(default) target(s).", restored);
             info("Fireworks are not required in this mode.");
         }
 
         if (notifyStateChanges.get() && webhook.isEnabled() && !WebhookSettings.globallyMuted()) {
             webhook.send(new WebhookManager.Embed()
                 .title("Base Hunter V2 started")
-                .description("Firework-free elytra sweep.")
+                .description(restored > 0 ? "Resumed a saved route." : "Firework-free elytra sweep.")
                 .color(0x00C8FF)
                 .field("Elytra", ElytraManager.status())
                 .field("Position", ServerUtils.coordinates())
@@ -749,9 +761,18 @@ public class BaseHunterV2 extends Module {
         publish(AutomationEvent.Type.FLIGHT_STARTED, java.util.Map.of("elytra", ElytraManager.status()));
         publish(AutomationEvent.Type.ROUTE_STARTED, java.util.Map.of(
             "position", ServerUtils.coordinates(), "dimension", ServerUtils.dimension()));
+
+        if (restored > 0) {
+            // restoreJourney() already put the in-flight target and the pending queue in place. If the plan
+            // held only queued targets, the first tick advances into them.
+            if (current == null) advance();
+            return true;
+        }
+
         refreshQueue();
         if (queue.isEmpty()) pushFrontier();
         advance();
+        return false;
     }
 
     /** Stops flying but leaves the module enabled. */
@@ -763,6 +784,7 @@ public class BaseHunterV2 extends Module {
         if (flight != null) flight.setWantsFlight(false);
         ElytraController.disable();
         releaseControl();
+        clearJourney();
 
         if (chatFeedback.get()) info("Base Hunter V2 stopped.");
     }
@@ -773,6 +795,8 @@ public class BaseHunterV2 extends Module {
         paused = true;
         ElytraController.disable();
         if (flight != null) flight.setWantsFlight(false);
+        // A pause often precedes a manual logout, so persist the route here too.
+        saveJourney();
         if (chatFeedback.get()) info("Route paused.");
         publish(AutomationEvent.Type.ROUTE_INTERRUPTED, java.util.Map.of("reason", "paused"));
     }
@@ -1316,6 +1340,10 @@ public class BaseHunterV2 extends Module {
                 .footer("Baritone Anarchy Expansion"));
         }
 
+        // The route is over, so nothing is left to resume: drop the saved copy rather than replaying it next
+        // launch. This runs before the flag is cleared because saveJourney() checks it.
+        clearJourney();
+
         started = false;
         current = null;
         queue.clear();
@@ -1328,6 +1356,92 @@ public class BaseHunterV2 extends Module {
         } else if (isActive()) {
             toggle();
         }
+    }
+
+    /**
+     * Snapshots the route so a restart can pick it up: the target in flight plus whatever is still queued.
+     *
+     * <p>Only the coordinates are remembered, and only for the server and dimension they were produced in -
+     * a route to (1000, 1000) means nothing after a portal, so a plan saved for one dimension is not offered
+     * in another. An empty plan clears any previous snapshot, so ending a route does not leave a stale one
+     * behind.
+     */
+    private void saveJourney() {
+        saveJourneyFor(ServerUtils.dimension());
+    }
+
+    /** As {@link #saveJourney()}, but stamps the plan with an explicit dimension (the one it was planned in). */
+    private void saveJourneyFor(String dimension) {
+        if (!rememberRoute.get() || !started) return;
+
+        ExplorationStore store = ExplorationStore.get();
+        if (store == null) return;
+
+        var plan = new dev.basehunt.bhclient.core.logic.JourneyPlan();
+        plan.setServer(ServerUtils.serverAddress());
+        plan.setDimension(dimension);
+        plan.touch();
+
+        // The in-flight target is worth re-flying; the queued ones only help if there was one to resume from.
+        if (current != null) plan.setInterrupted(current.x(), current.z(), current.reason());
+        else if (interruptedTarget != null) {
+            plan.setInterrupted(interruptedTarget.x(), interruptedTarget.z(), interruptedTarget.reason());
+        }
+
+        for (FlightPlanner.Target target : queue) plan.addPending(target.x(), target.z(), target.reason());
+
+        if (plan.isEmpty()) {
+            store.clearJourney();
+            return;
+        }
+
+        store.setJourney(plan);
+    }
+
+    /** Restores a saved route into the queue, returning how many targets were restored. */
+    public int restoreJourney() {
+        ExplorationStore store = ExplorationStore.get();
+        var plan = store == null ? null : store.journey();
+        if (plan == null) return 0;
+
+        if (!plan.matches(ServerUtils.serverAddress(), ServerUtils.dimension())) return 0;
+
+        if (plan.hasInterrupted()) {
+            var target = plan.interrupted();
+            current = new FlightPlanner.Target(target.x(), target.z(), 0, 0, target.reason());
+        }
+
+        queue.clear();
+        for (var target : plan.pending()) {
+            queue.addLast(new FlightPlanner.Target(target.x(), target.z(), 0, 0, target.reason()));
+        }
+
+        started = true;
+        startedAt = System.currentTimeMillis();
+        lastX = ServerUtils.mc().player == null ? 0 : ServerUtils.mc().player.getX();
+        lastZ = ServerUtils.mc().player == null ? 0 : ServerUtils.mc().player.getZ();
+        lastDimension = ServerUtils.dimension();
+        lastFlightState = ElytraManager.flightState();
+        if (nextMilestoneBlocks <= 0) nextMilestoneBlocks = milestoneInterval.get();
+
+        return plan.size();
+    }
+
+    /** A one-line summary of the saved route, for /bh route saved and the HUD. */
+    public String savedJourneySummary() {
+        ExplorationStore store = ExplorationStore.get();
+        var plan = store == null ? null : store.journey();
+        if (plan == null) return "no saved route";
+        if (!plan.matches(ServerUtils.serverAddress(), ServerUtils.dimension())) {
+            return "saved route is for another server or dimension (" + plan.describe() + ")";
+        }
+        return plan.describe();
+    }
+
+    /** Forgets any saved route. Used when the user ends a route on purpose. */
+    public void clearJourney() {
+        ExplorationStore store = ExplorationStore.get();
+        if (store != null) store.clearJourney();
     }
 
     private void sendProgressIfDue() {

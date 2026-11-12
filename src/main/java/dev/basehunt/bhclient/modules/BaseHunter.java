@@ -171,14 +171,6 @@ public class BaseHunter extends Module {
         .build()
     );
 
-    private final Setting<Boolean> reverseOnArrival = sgRoute.add(new BoolSetting.Builder()
-        .name("reverse-on-arrival")
-        .description("Fly the sweep back the way it came instead of teleporting the pattern forward.")
-        .defaultValue(false)
-        .visible(() -> mode.get() == Mode.Heading || mode.get() == Mode.Grid)
-        .build()
-    );
-
     private final Setting<Double> fireworksKeep = sgRoute.add(new DoubleSetting.Builder()
         .name("fireworks-to-keep")
         .description("Land and stop when fewer than this many fireworks are left. 0 disables the check.")
@@ -213,13 +205,6 @@ public class BaseHunter extends Module {
         .description("Automatically resume the route once nearby players are gone.")
         .defaultValue(true)
         .visible(pauseNearPlayers::get)
-        .build()
-    );
-
-    private final Setting<Boolean> stopOnStash = sgSafety.add(new BoolSetting.Builder()
-        .name("stop-on-stash")
-        .description("Halt the autopilot when the stash finder reports a stash.")
-        .defaultValue(false)
         .build()
     );
 

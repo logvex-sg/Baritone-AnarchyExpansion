@@ -6,6 +6,8 @@ import dev.basehunt.bhclient.core.sixbt.KitLoadoutRegistry;
 import dev.basehunt.bhclient.core.sixbt.KitMessages;
 import dev.basehunt.bhclient.core.sixbt.KitRequestQueue;
 import dev.basehunt.bhclient.core.sixbt.KitRestockPlan;
+import dev.basehunt.bhclient.core.sixbt.KitSources;
+import dev.basehunt.bhclient.core.sixbt.RequesterPresence;
 import dev.basehunt.bhclient.utils.ServerUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import net.minecraft.client.MinecraftClient;
@@ -60,9 +62,20 @@ public final class KitDeliveryService {
     private int arrivalRadius = 6;
     private int requesterGoneTicks = 100;
     private int tpaTimeoutTicks = 600;
-    private int missingTicks;
+    private RequesterPresence presence = new RequesterPresence(100);
     private KitMessages messages = new KitMessages();
     private KitMessages.Kind lastMessage;
+
+    /**
+     * Kit name -> container name, for kits stocked as a renamed shulker box rather than an item list.
+     *
+     * <p>A kit maker can pre-pack a shulker box, rename it after the kit, and carry it: a box called
+     * <em>totem</em> answers {@code >lxkit totem}. For such a kit there is no loadout item list, so the drop
+     * has to pick the stack whose display name matches instead of any loadout item. Keeping the mapping here
+     * means the whole delivery path stays unchanged - only which stack is dropped, and how "stocked" is
+     * judged, differ.
+     */
+    private final Map<String, String> nameFilters = new LinkedHashMap<>();
 
     public KitDeliveryService(int capacity, long cooldownMillis, Listener listener) {
         this.queue = new KitRequestQueue(capacity, cooldownMillis);
@@ -72,6 +85,22 @@ public final class KitDeliveryService {
     /** Replaces the whisper catalogue. */
     public void setMessages(KitMessages messages) {
         if (messages != null) this.messages = messages;
+    }
+
+    /** Records that a kit is stocked as a container renamed after it, so the drop matches by name. */
+    public void setNameFilter(String kit, String containerName) {
+        if (kit == null || kit.isBlank()) return;
+        String key = kit.trim().toLowerCase(Locale.ROOT);
+        if (containerName == null || containerName.isBlank()) {
+            nameFilters.remove(key);
+        } else {
+            nameFilters.put(key, containerName.trim());
+        }
+    }
+
+    /** The container name a kit is stocked under, or null when it is a normal item loadout. */
+    public String nameFilter(String kit) {
+        return kit == null ? null : nameFilters.get(kit.trim().toLowerCase(Locale.ROOT));
     }
 
     public KitMessages messages() {
@@ -117,6 +146,7 @@ public final class KitDeliveryService {
 
     public void setRequesterGoneTicks(int ticks) {
         this.requesterGoneTicks = Math.max(20, ticks);
+        this.presence = new RequesterPresence(this.requesterGoneTicks);
     }
 
     /** How long to wait for a requester to accept the teleport before giving up. */
@@ -181,7 +211,14 @@ public final class KitDeliveryService {
             if (next == null) return;
 
             KitLoadout loadout = loadouts == null ? null : loadouts.find(next.kit());
-            if (requireStock && loadout != null && !isStocked(mc, loadout)) {
+            String nameFilter = nameFilter(next.kit());
+            if (requireStock && nameFilter != null && !carriesNamedStack(mc, nameFilter)) {
+                queue.poll();
+                queue.served(next.requester(), System.currentTimeMillis());
+                if (listener != null) listener.onRestockNeeded(next.kit(), 1);
+                return;
+            }
+            if (requireStock && nameFilter == null && loadout != null && !isStocked(mc, loadout)) {
                 int missing = KitRestockPlan.compare(loadout, heldCounts(mc, loadout)).missingItems();
                 queue.poll();
                 queue.served(next.requester(), System.currentTimeMillis());
@@ -192,6 +229,7 @@ public final class KitDeliveryService {
             queue.poll();
             // Tell the requester we are on it before the teleport, so they know the request landed.
             whisper(sender, KitMessages.Kind.GRABBING, next.requester(), next.kit(), Map.of());
+            presence.reset();
             List<KitDeliveryMachine.Action> actions = machine.start(next.requester(), next.kit());
             if (listener != null) listener.onStarted(next.requester(), next.kit());
             run(mc, sender, loadouts, actions);
@@ -201,9 +239,11 @@ public final class KitDeliveryService {
         // Observe the world, then let the machine decide.
         boolean waiting = machine.state() == KitDeliveryMachine.State.WAITING_ARRIVAL;
         boolean arrived = isRequesterNear(mc, machine.requester());
-        boolean gone = isRequesterGone(mc, machine.requester());
+        // Presence, not proximity, decides whether they left: after the teleport the requester stays loaded
+        // but may be a few blocks away picking items up, which is not a departure.
+        boolean gone = presence.observe(findRequester(mc, machine.requester()) != null);
         boolean timedOut = waiting && !arrived && machine.ticksInState() >= tpaTimeoutTicks;
-        int remaining = remainingLoadoutItems(mc, loadouts, machine.kitName());
+        int remaining = remainingLoadoutItems(mc, loadouts, machine.kitName(), nameFilter(machine.kitName()));
 
         KitDeliveryMachine.Observation observation = new KitDeliveryMachine.Observation(
             arrived, false, timedOut, remaining, gone);
@@ -232,7 +272,7 @@ public final class KitDeliveryService {
             } else if (action instanceof KitDeliveryMachine.Action.CancelTpa) {
                 if (sender != null) sender.send("/tpcancel");
             } else if (action instanceof KitDeliveryMachine.Action.DropItem) {
-                dropOneLoadoutItem(mc, loadouts, machine.kitName());
+                dropOneLoadoutItem(mc, loadouts, machine.kitName(), nameFilter(machine.kitName()));
             } else if (action instanceof KitDeliveryMachine.Action.KillSelf) {
                 // The kit is confirmed handed over: tell the requester, then reset the bot.
                 whisper(sender, KitMessages.Kind.DELIVERED, machine.requester(), machine.kitName(), Map.of());
@@ -271,16 +311,6 @@ public final class KitDeliveryService {
         return dx * dx + dz * dz + dy * dy <= (double) arrivalRadius * arrivalRadius;
     }
 
-    private boolean isRequesterGone(MinecraftClient mc, String name) {
-        if (findRequester(mc, name) != null) {
-            missingTicks = 0;
-            return false;
-        }
-        // The requester may simply be out of render distance; only give up after a while.
-        missingTicks++;
-        return missingTicks > requesterGoneTicks;
-    }
-
     private boolean isStocked(MinecraftClient mc, KitLoadout loadout) {
         return KitRestockPlan.compare(loadout, heldCounts(mc, loadout)).isReady();
     }
@@ -301,13 +331,29 @@ public final class KitDeliveryService {
         return counts;
     }
 
-    private int remainingLoadoutItems(MinecraftClient mc, KitLoadoutRegistry loadouts, String kitName) {
-        if (mc.player == null || loadouts == null) return 0;
+    private int remainingLoadoutItems(MinecraftClient mc, KitLoadoutRegistry loadouts, String kitName,
+                                      String nameFilter) {
+        if (mc.player == null) return 0;
+
+        PlayerInventory inventory = mc.player.getInventory();
+
+        // A kit stocked as a renamed shulker box: the "remaining" is whether that box is still carried.
+        if (nameFilter != null) {
+            for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {
+                ItemStack stack = inventory.getStack(slot);
+                if (stack.isEmpty()) continue;
+                if (KitSources.isShulkerId(itemId(stack)) && KitSources.matches(nameFilter, stack.getName().getString())) {
+                    return 1;
+                }
+            }
+            return 0;
+        }
+
+        if (loadouts == null) return 0;
         KitLoadout loadout = loadouts.find(kitName);
         if (loadout == null || loadout.isEmpty()) return 0;
 
         int remaining = 0;
-        PlayerInventory inventory = mc.player.getInventory();
         for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {
             ItemStack stack = inventory.getStack(slot);
             if (stack.isEmpty()) continue;
@@ -318,12 +364,29 @@ public final class KitDeliveryService {
     }
 
     /** Drops one whole stack that belongs to the kit, from the main inventory. */
-    private void dropOneLoadoutItem(MinecraftClient mc, KitLoadoutRegistry loadouts, String kitName) {
-        if (mc.player == null || loadouts == null) return;
+    private void dropOneLoadoutItem(MinecraftClient mc, KitLoadoutRegistry loadouts, String kitName,
+                                    String nameFilter) {
+        if (mc.player == null) return;
+
+        PlayerInventory inventory = mc.player.getInventory();
+
+        // A kit stocked as a renamed shulker box: drop the box itself, matched by its display name.
+        if (nameFilter != null) {
+            for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {
+                ItemStack stack = inventory.getStack(slot);
+                if (stack.isEmpty()) continue;
+                if (KitSources.isShulkerId(itemId(stack)) && KitSources.matches(nameFilter, stack.getName().getString())) {
+                    InvUtils.drop().slot(slot);
+                    return;
+                }
+            }
+            return;
+        }
+
+        if (loadouts == null) return;
         KitLoadout loadout = loadouts.find(kitName);
         if (loadout == null) return;
 
-        PlayerInventory inventory = mc.player.getInventory();
         for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {
             ItemStack stack = inventory.getStack(slot);
             if (stack.isEmpty()) continue;
@@ -333,6 +396,18 @@ public final class KitDeliveryService {
                 return;
             }
         }
+    }
+
+    /** True when the player is carrying a stack whose display name matches the kit's container name. */
+    private boolean carriesNamedStack(MinecraftClient mc, String containerName) {
+        if (mc.player == null) return false;
+        PlayerInventory inventory = mc.player.getInventory();
+        for (int slot = 0; slot < PlayerInventory.MAIN_SIZE; slot++) {
+            ItemStack stack = inventory.getStack(slot);
+            if (stack.isEmpty()) continue;
+            if (KitSources.matches(containerName, stack.getName().getString())) return true;
+        }
+        return false;
     }
 
     private static String itemId(ItemStack stack) {
