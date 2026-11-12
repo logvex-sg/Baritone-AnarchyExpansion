@@ -353,7 +353,32 @@ public class BaseHuntingHud extends HudElement {
             }
 
             KitBot kits = Modules.get().get(KitBot.class);
-            if (kits != null && kits.isActive()) lines.add("Kits: " + kits.statusLine());
+            if (kits != null && kits.isActive()) {
+                lines.add("Kits: " + kits.statusLine());
+                if (kits.isDelivering()) lines.add("Kit delivery: " + kits.deliveryStatusLine());
+            }
+
+            // 6b6t server intelligence
+            dev.basehunt.bhclient.modules.SixbtTpsMonitor tps =
+                Modules.get().get(dev.basehunt.bhclient.modules.SixbtTpsMonitor.class);
+            if (tps != null && tps.isActive()) lines.add("Server TPS: " + tps.statusLine());
+
+            dev.basehunt.bhclient.modules.SixbtHotspotTracker hotspot =
+                Modules.get().get(dev.basehunt.bhclient.modules.SixbtHotspotTracker.class);
+            if (hotspot != null && hotspot.isActive() && hotspot.current() != null
+                && hotspot.current().active()) {
+                lines.add("Hotspot: " + hotspot.statusLine());
+            }
+
+            dev.basehunt.bhclient.modules.SixbtHomeManager homes =
+                Modules.get().get(dev.basehunt.bhclient.modules.SixbtHomeManager.class);
+            if (homes != null && homes.isActive()) lines.add("Homes: " + homes.statusLine());
+
+            dev.basehunt.bhclient.modules.SixbtPlayerTracker sixbtPlayers =
+                Modules.get().get(dev.basehunt.bhclient.modules.SixbtPlayerTracker.class);
+            if (sixbtPlayers != null && sixbtPlayers.isActive()) {
+                lines.add("6b6t players: " + sixbtPlayers.statusLine());
+            }
         }
 
         return lines;

@@ -2,7 +2,7 @@
 
 This is the complete manual for the addon: what every module does, how the pieces fit together, how
 to configure them for an anarchy server, and how to read the data it stores. It documents release
-**2.4.0**.
+**2.5.0**.
 
 If you only read one section, read [Quick start](#quick-start) and
 [How the automation decides things](#how-the-automation-decides-things).
@@ -24,12 +24,13 @@ If you only read one section, read [Quick start](#quick-start) and
 13. [How the automation decides things](#how-the-automation-decides-things)
 14. [Automation engine, tasks and the brain](#automation-engine-tasks-and-the-brain)
 15. [Chat commands and kits](#chat-commands-and-kits)
-16. [The command terminal](#the-command-terminal)
-17. [Discord webhooks](#discord-webhooks)
-18. [Commands](#commands)
-19. [Data, persistence and backups](#data-persistence-and-backups)
-20. [Troubleshooting](#troubleshooting)
-21. [Building from source](#building-from-source)
+16. [6b6t server tools](#6b6t-server-tools)
+17. [The command terminal](#the-command-terminal)
+18. [Discord webhooks](#discord-webhooks)
+19. [Commands](#commands)
+20. [Data, persistence and backups](#data-persistence-and-backups)
+21. [Troubleshooting](#troubleshooting)
+22. [Building from source](#building-from-source)
 
 ## What this is
 
@@ -54,7 +55,7 @@ and a set of automatic managers (elytra, mending, ender chest, survival).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add Baritone for Meteor. Only Base Hunter v1 needs it; everything else works without it.
-4. Drop `basehunting-2.3.0.jar` into `mods`.
+4. Drop `basehunting-2.5.0.jar` into `mods`.
 5. Launch the game and look for the **Base Hunting** category in Meteor's module list.
 
 Baritone is declared as a `recommends`, not a `depends`, so the addon loads whether or not it is
@@ -99,9 +100,14 @@ All modules live under the **Base Hunting** category in Meteor's module list.
 | `storage-monitor` | off | Runs storage workflows and is the storage status view. |
 | `automation-brain` | off | Reacts to events and player facts and queues automation tasks. |
 | `chat-commands` | off | Runs addon commands typed in chat behind a configurable prefix. |
-| `kit-bot` | off | Claims server kits and tracks their cooldowns per server. |
+| `kit-bot` | off | Claims server kits, tracks their cooldowns, and can act as a 6b6t kit maker. |
 | `auto-storage` | off | Exact-quantity withdrawals, deposits and restocks as queued tasks. |
 | `command-terminal` | off | In-game command terminal over every manager, with Tab completion, history and macros. |
+| `6b6t-homes` | off | Tracks 6b6t homes and warns before the server's home limit. |
+| `6b6t-tpa` | off | Sends, cancels and auto-answers 6b6t teleport requests. |
+| `6b6t-tps` | off | Polls 6b6t's `/tps` and warns when the server or your link is lagging. |
+| `6b6t-hotspot` | off | Tracks the current 6b6t Hotspot and can teleport you to it. |
+| `6b6t-players` | off | Records 6b6t player sightings with a searchable per-server history. |
 
 ## Automatic elytra management
 
@@ -391,6 +397,8 @@ depth and kit status (`show-automation`).
 - **Notifications** — webhook status; send-test.
 - **Database** — record counts, integrity report (including any records skipped on load) and
   export/import/copy.
+- **6b6t** — kit-delivery status and a button to open the **6b6t menu**, which carries a status line
+  and the controls for each 6b6t module, a loadout editor, and the server's command catalogue.
 - **Terminal** — the in-game command line: scrollable output, an input box with Tab completion and
   history, and Help / Status / Clear / Settings buttons.
 
@@ -516,6 +524,52 @@ cooldown rather than ignoring it.
 a kit as soon as its cooldown elapses. `/bh kit list` shows each kit and its remaining cooldown, `/bh
 kit claim <name>` claims one and `/bh kit all` claims every ready kit. Kit state is persisted by
 `KitBotStore`, so cooldowns survive a restart.
+
+#### Kit maker (6b6t delivery)
+
+On 6b6t the server does not hand out kits at all — players do. A kit maker watches chat for a request
+like `!kit pvp`, teleports to the requester with `/tpa`, drops the items, and kills itself to reset.
+`kit-bot` can be that bot.
+
+Enable `kit-bot → delivery-enabled`. It is off by default because the role teleports you to a stranger
+and then kills you, which nobody should get by accident. Then build the kits it may hand out as
+**loadouts**: `/bh kit loadout create pvp`, `/bh kit loadout add pvp diamond_sword 1`, `/bh kit loadout
+add pvp golden_apple 8`, or open the 6b6t menu and use *Edit* on a kit — *Add Held Item* takes the item
+in your hand, which is the quickest way to record a loadout.
+
+A delivery is only started when you are carrying the whole loadout (`require-stock`); otherwise it is
+refused with the shortfall (`/bh kit restock pvp`). Each request enters a bounded queue with a
+per-player cooldown, so a spammer cannot flood it and cannot be served twice. The delivery itself is
+driven by a pure state machine with explicit failure paths — a refused teleport, a timeout, or a
+requester who leaves — and it never loops a failed teleport. `/bh kit delivery` shows the state and the
+queue, `/bh kit queue clear` empties it, and `/bh kit deliver <player> <kit>` starts one by hand.
+
+## 6b6t server tools
+
+[6b6t](https://www.6b6t.org/en) is a no-rules anarchy server with its own command set. Five modules are
+wired for it; they work on any server but assume 6b6t's syntax.
+
+- **`6b6t-homes`** — `/sethome`, `/home`, `/delhome`. The server never tells the client how many homes
+  your rank allows, so `home-limit` is a setting; set it to match your rank and the module warns before
+  a `/sethome` is refused. It also notices a home the server confirms in chat, so homes set without the
+  addon are still tracked. `/bh 6b6t home set base`, `… home goto base`, `… home list`.
+- **`6b6t-tpa`** — `/tpa`, `/tpcancel`, `/tpy`, `/tpn`. `/bh 6b6t tpa send Steve` requests a teleport;
+  an unanswered request is withdrawn automatically after `request-timeout`. `auto-answer` replies to
+  incoming requests, but only from the `allow-list` unless `accept-anyone` is on, so a stranger cannot
+  pull you across the map.
+- **`6b6t-tps`** — polls `/tps` every `poll-seconds` and warns below `low-threshold`. 6b6t reports both
+  the server's TPS and yours; the module shows both, because a healthy server with a bad personal TPS
+  means your connection is the problem, not the server.
+- **`6b6t-hotspot`** — tracks the current Hotspot, notifies once when one goes live, and can teleport
+  you in (`/bh 6b6t hotspot join`). `auto-join` is off: on an anarchy server a Hotspot is a fight, and
+  the module says so when one appears.
+- **`6b6t-players`** — records every player seen, with the dimension, coordinates and time. `/bh 6b6t
+  players` lists them for the current server. The store is bounded and evicts the oldest, so a long
+  session cannot grow the file without limit.
+
+Open the **6b6t menu** with `/bh 6b6t gui`, or the *Open 6b6t Menu* button in the Base Hunting screen.
+It gives each module a status line and its controls, and lists 6b6t's command catalogue (`/bh 6b6t
+commands` filters it). The terminal exposes the same tools under `sixbt …` and the enlarged `kit …`.
 
 ## The command terminal
 
@@ -687,28 +741,62 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh kit status` / `list` | Kits and their remaining cooldowns |
 | `/bh kit claim <name>` | Claim one kit |
 | `/bh kit all` | Claim every ready kit |
+| `/bh kit delivery` / `queue` | The kit-maker delivery state and queue |
+| `/bh kit queue clear` | Empty the delivery queue and abandon the current delivery |
+| `/bh kit deliver <player> <kit>` | Deliver a loadout to a player by hand |
+| `/bh kit loadout` / `list` | List kit loadouts |
+| `/bh kit loadout show <kit>` | Show one loadout's items |
+| `/bh kit loadout add <kit> <item> [count]` | Add an item to a loadout |
+| `/bh kit loadout remove <kit> <item>` | Remove an item from a loadout |
+| `/bh kit loadout create` / `delete <kit>` | Create or delete a loadout |
+| `/bh kit restock <kit>` | Show what is missing to deliver a loadout |
+| `/bh kit gui` | Open the 6b6t menu |
 | `/bh chat` | List the chat commands |
 | `/bh chat run <line>` | Run a chat command line as if you had typed it |
 | `/bh terminal` | Open the management screen, whose Terminal section is at the bottom |
 | `/bh terminal run <line>` | Run one terminal command and echo its output to chat |
 | `/bh terminal help` | List every terminal command |
 
+### 6b6t
+
+| Command | What it does |
+| --- | --- |
+| `/bh 6b6t` / `status` | The 6b6t module status in one place |
+| `/bh 6b6t gui` | Open the 6b6t menu |
+| `/bh 6b6t home list` | The homes in the local book |
+| `/bh 6b6t home set [name]` | Set a home here (`/sethome`) |
+| `/bh 6b6t home goto <name>` | Teleport to a home (`/home`) |
+| `/bh 6b6t home del <name>` | Delete a home (`/delhome`) |
+| `/bh 6b6t home cancel` | Cancel a home teleport (`/homecancel`) |
+| `/bh 6b6t tpa send <player>` | Request a teleport (`/tpa`) |
+| `/bh 6b6t tpa cancel` | Withdraw the request (`/tpcancel`) |
+| `/bh 6b6t tpa accept` / `decline <player>` | Answer a request (`/tpy`, `/tpn`) |
+| `/bh 6b6t tps` | The last TPS reading and the average |
+| `/bh 6b6t tps poll` | Ask the server for its TPS now |
+| `/bh 6b6t hotspot` | The current Hotspot status |
+| `/bh 6b6t hotspot join` / `create` / `cancel` / `info` | Drive the Hotspot |
+| `/bh 6b6t players` | Players seen on this server |
+| `/bh 6b6t commands [filter]` | 6b6t's command catalogue |
+
 ## Data, persistence and backups
 
 State is stored per server address, so travelling between anarchy servers never mixes coordinates up.
-Seven stores persist to NBT under Meteor's config folder:
+Ten stores persist to NBT under Meteor's config folder:
 
 | Store | File | Contents |
 | --- | --- | --- |
 | `StashManager` | `base-hunting-stashes.nbt` | Every stash/base/structure record |
 | `PlayerTracker` | `base-hunting-players.nbt` | Player entries and their sightings |
-| `EnderChestStore` | `base-hunting-enderchests.nbt` | Recorded ender chest locations |
+| `EnderChestStore` | `base-hunting-ender-chests.nbt` | Recorded ender chest locations |
 | `ExplorationStore` | `base-hunting-exploration.nbt` | Visited chunks and route waypoints |
 | `StorageRegistry` | `base-hunting-storage.nbt` | Registered containers and their last contents |
 | `WorkflowManager` | `base-hunting-workflows.nbt` | Custom storage workflow definitions |
 | `KitBotStore` | `base-hunting-kits.nbt` | Kit definitions and their last-claim cooldowns |
+| `KitLoadoutStore` | `base-hunting-kit-loadouts.nbt` | 6b6t kit-maker loadouts, per server |
+| `SixbtServerStore` | `base-hunting-6b6t.nbt` | The 6b6t home book, per server |
+| `SixbtPlayerStore` | `base-hunting-6b6t-players.nbt` | 6b6t player sightings, bounded and evicting |
 
-All seven are versioned. Each store reads its records tolerantly: **a single corrupted record is
+All ten are versioned. Each store reads its records tolerantly: **a single corrupted record is
 skipped, never fatal** — one bad entry cannot cost you the rest of the database. The number of records
 skipped on the last load is reported by `/bh database status` and in the management screen's Database
 section, and logged at startup. Meteor itself also writes a timestamped `.backup.nbt` if a whole file
@@ -759,7 +847,7 @@ the addon. See the build notes in `AGENTS.md` about Xvfb and software GL.
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/basehunting-2.3.0.jar
+./gradlew build          # jar -> build/libs/basehunting-2.5.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
