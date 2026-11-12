@@ -183,32 +183,6 @@ public class BaseHunterV2 extends Module {
         .build()
     );
 
-    private final Setting<Integer> unsafeAltitudeMargin = sgFlight.add(new IntSetting.Builder()
-        .name("unsafe-altitude-margin")
-        .description("Do not attempt a launch when the player is this close to the world ceiling.")
-        .defaultValue(4)
-        .min(1)
-        .sliderRange(1, 64)
-        .build()
-    );
-
-    private final Setting<Boolean> useBaritonePregen = sgFlight.add(new BoolSetting.Builder()
-        .name("baritone-pregen")
-        .description("Use Baritone to pre-generate chunks along the next leg, if Baritone is installed.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Integer> pregenLegLength = sgFlight.add(new IntSetting.Builder()
-        .name("pregen-leg-length")
-        .description("How far ahead to pre-generate.")
-        .defaultValue(512)
-        .min(128)
-        .sliderRange(128, 4096)
-        .visible(() -> useBaritonePregen.get())
-        .build()
-    );
-
     // Exploration
 
     private final Setting<Boolean> useTargetPlanner = sgExploration.add(new BoolSetting.Builder()

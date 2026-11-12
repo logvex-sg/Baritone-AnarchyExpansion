@@ -246,7 +246,7 @@ public class CommandTerminal extends Module {
             .sub("stop", ChatPermissions.Level.MOVEMENT)
             .build(), this::baritone);
 
-        registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>|whitelist ...]",
+        registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>|whitelist ...|doctor]",
             "claim kits, or run the 6b6t kit-maker delivery role", ChatPermissions.Level.READ_ONLY)
             .aliases("kits")
             .sub("list", ChatPermissions.Level.READ_ONLY)
@@ -261,9 +261,11 @@ public class CommandTerminal extends Module {
             .sub("messages", ChatPermissions.Level.READ_ONLY)
             .sub("message", ChatPermissions.Level.CONTROL)
             .sub("source", ChatPermissions.Level.READ_ONLY)
+            .sub("shulkers", ChatPermissions.Level.READ_ONLY)
+            .sub("doctor", ChatPermissions.Level.READ_ONLY)
             .completions(index -> index == 0
                 ? List.of("list", "status", "claim", "delivery", "deliver", "loadout", "restock", "queue",
-                    "whitelist", "messages", "message", "source")
+                    "whitelist", "messages", "message", "source", "shulkers", "doctor")
                 : kitNames())
             .build(), this::kit);
 
@@ -686,6 +688,12 @@ public class CommandTerminal extends Module {
                 }
                 context.info(bot.describeKitSource(context.arg(1)));
             }
+            case "shulkers" -> {
+                for (String line : bot.describeCarriedShulkers()) context.info("%s", line);
+            }
+            case "doctor" -> {
+                for (String line : bot.diagnose()) context.info("%s", line);
+            }
             case "restock" -> {
                 if (context.argCount() < 2) {
                     context.error("usage: kit restock <kit>");
@@ -695,7 +703,7 @@ public class CommandTerminal extends Module {
             }
             default -> context.error(
                 "usage: kit [list|status|claim|delivery|deliver|loadout|restock|queue|whitelist|messages|"
-                    + "message|source]");
+                    + "message|source|shulkers|doctor]");
         }
     }
 

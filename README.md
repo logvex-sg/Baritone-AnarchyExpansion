@@ -113,6 +113,7 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh tasks` / `tasks status` | The active and queued automation tasks |
 | `/bh withdraw <item> [amount]` / `deposit <item> [amount]` | Exact-quantity transfer, as a queued task |
 | `/bh kit status` / `list` / `claim <name>` / `all` | Server kit status and claiming |
+| `/bh kit shulkers` / `source <kit>` | Carried shulker boxes by kit name; where a kit is stocked |
 | `/bh chat run <line>` | Run a chat command line as if you had typed it |
 | `/bh terminal` | Open the management screen, whose Terminal section is at the bottom |
 | `/bh terminal run <line>` | Run one terminal command and echo its output to chat |
@@ -306,9 +307,19 @@ the client stops trying instead of spamming a claim the server will reject.
 The same module can act as a **6b6t kit maker**. On 6b6t, kits are handed out by players rather than by
 the server: someone types `!kit pvp` in chat, a delivery bot teleports to them, hands over the items and
 kills itself to reset. Turn on `kit-bot → delivery-enabled` to be that bot. The delivery role is off by
-default because it teleports you to strangers and then kills you. Configure the kits it can deliver as
-**loadouts** (`/bh kit loadout add pvp diamond_sword 1`), and it will refuse to deliver a loadout you are
-not carrying unless `require-stock` is off. `/bh kit delivery` shows the queue and the state machine.
+default because it teleports you to strangers and then kills you.
+
+A kit can be stocked two ways, and they mix freely:
+
+1. **A loadout** — an explicit item list (`/bh kit loadout add pvp diamond_sword 1`).
+2. **A named shulker box** — pre-pack a shulker box, rename it after the kit, and carry it. A box called
+   `totem` answers `>lxkit totem` with no loadout to configure. Names are matched after normalisation,
+   so `§6Totem`, `totem_shulker_box` and `kit totem` all work; a near-miss (`totems`) does not, so a typo
+   delivers nothing rather than the wrong kit. `/bh kit shulkers` lists the boxes you carry and the kit
+   each one answers. Toggle with `kit-bot → shulker-kits`.
+
+It will refuse to deliver a kit you are not carrying unless `require-stock` is off. `/bh kit delivery`
+shows the queue and the state machine.
 
 ## 6b6t server tools
 

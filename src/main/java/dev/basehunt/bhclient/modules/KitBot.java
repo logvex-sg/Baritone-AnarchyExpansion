@@ -13,6 +13,7 @@ import dev.basehunt.bhclient.core.sixbt.KitMessages;
 import dev.basehunt.bhclient.core.sixbt.KitRequestFlow;
 import dev.basehunt.bhclient.core.sixbt.KitRequestPolicy;
 import dev.basehunt.bhclient.core.sixbt.KitRestockPlan;
+import dev.basehunt.bhclient.core.sixbt.KitSources;
 import dev.basehunt.bhclient.core.sixbt.SixbtChat;
 import dev.basehunt.bhclient.core.sixbt.TpaPolicy;
 import dev.basehunt.bhclient.systems.KitBotStore;
@@ -201,6 +202,14 @@ public class KitBot extends Module {
     private final Setting<Boolean> requireStock = sgDelivery.add(new BoolSetting.Builder()
         .name("require-stock")
         .description("Refuse a delivery when you are not carrying the whole loadout.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> nameKits = sgDelivery.add(new BoolSetting.Builder()
+        .name("shulker-kits")
+        .description("Also serve a request whose name matches a carried shulker box (e.g. a box renamed "
+            + "'totem' answers >lxkit totem), without a registered loadout.")
         .defaultValue(true)
         .build()
     );
@@ -528,7 +537,15 @@ public class KitBot extends Module {
 
             long now = System.currentTimeMillis();
             KitRequestPolicy.Decision decision = requestPolicy.decide(found.requester());
-            boolean kitExists = loadouts.contains(found.kit());
+            // A kit may be stocked as a shulker box renamed after it (e.g. a box called "totem"). That box is
+            // concrete stock the bot can drop as-is, so it is preferred over a registered loadout - which is
+            // the common case where a "totem" loadout is registered but the actual kit is a "totem" box.
+            String namedSource = null;
+            if (nameKits.get()) {
+                var named = KitChestSource.carriedShulkerByName(found.kit());
+                if (named.isPresent()) namedSource = named.get().displayName();
+            }
+            boolean kitExists = namedSource != null || loadouts.contains(found.kit());
             String refusal = decision == KitRequestPolicy.Decision.ALLOW && kitExists
                 ? delivery.wouldRefuse(found.requester(), now) : null;
 
@@ -548,8 +565,19 @@ public class KitBot extends Module {
                 return;
             }
 
+            // Accepted. A name-sourced kit needs no chest: the box is already carried.
+            if (namedSource != null) {
+                delivery.setNameFilter(found.kit(), namedSource);
+                String reason = delivery.offer(found.requester(), found.kit(), now);
+                if (reason != null && chatFeedback.get()) {
+                    warning("Ignoring kit request from %s: %s.", found.requester(), reason);
+                }
+                return;
+            }
+
             // Accepted. Check storage holds the kit before teleporting anywhere.
             KitLoadout loadout = loadouts.find(found.kit());
+            delivery.setNameFilter(found.kit(), null);
             ChestKitSearch.Result source = KitChestSource.find(loadout, chestRadius.get());
             if (!source.complete()) {
                 // Do not leave the requester hanging after "grabbing": tell them it failed.
@@ -684,7 +712,16 @@ public class KitBot extends Module {
     /** Manually delivers a kit to a named player, bypassing the queue. */
     public String deliverTo(String player, String kit) {
         if (delivery == null) rebuildDelivery();
-        if (!loadouts.contains(kit)) return "no loadout named '" + kit + "'";
+        // A carried shulker box renamed after the kit is the most direct source, so it wins over a loadout.
+        var named = nameKits.get()
+            ? KitChestSource.carriedShulkerByName(kit) : java.util.Optional.<KitSources.NamedStack>empty();
+        if (named.isPresent()) {
+            delivery.setNameFilter(kit, named.get().displayName());
+        } else if (loadouts.contains(kit)) {
+            delivery.setNameFilter(kit, null);
+        } else {
+            return "no loadout named '" + kit + "'";
+        }
         if (delivery.busy()) return "already delivering " + delivery.statusLine();
         String reason = delivery.offer(player, kit, System.currentTimeMillis());
         if (reason != null) return "refused: " + reason;
@@ -853,8 +890,89 @@ public class KitBot extends Module {
 
     /** A one-line report of where a kit is stored, or why it cannot be delivered. */
     public String describeKitSource(String kit) {
-        if (!loadouts.contains(kit)) return "no loadout named '" + kit + "'";
+        if (!loadouts.contains(kit)) {
+            // A kit may be a carried shulker box renamed after it.
+            if (nameKits.get()) {
+                var named = KitChestSource.carriedShulkerByName(kit);
+                if (named.isPresent()) {
+                    return "'" + named.get().displayName() + "' shulker is carried (kit by name)";
+                }
+                var nearby = KitChestSource.findShulkerByName(kit, chestRadius.get());
+                if (nearby.isPresent()) {
+                    return "'" + nearby.get().displayName() + "' shulker is nearby (open it once to carry it)";
+                }
+            }
+            return "no loadout named '" + kit + "'";
+        }
         return findKitSource(kit).summary();
+    }
+
+    /** True when a request for {@code kit} can be served: a registered loadout, or a carried named shulker. */
+    public boolean canServe(String kit) {
+        if (loadouts.contains(kit)) return true;
+        return nameKits.get() && KitChestSource.carriedShulkerByName(kit).isPresent();
+    }
+
+    /**
+     * A readiness self-check: why a kit request would, or would not, be served right now.
+     *
+     * <p>The commonest "the bot does not react" causes are all visible here in one place - delivery is off,
+     * the requester is not whitelisted, the requested kit matches neither a loadout nor a carried shulker, or
+     * a required kit is simply not carried. Printing them together turns a silent failure into one command.
+     */
+    public List<String> diagnose() {
+        List<String> lines = new ArrayList<>();
+
+        lines.add("delivery: " + (deliveryEnabled.get()
+            ? "ON" : "OFF - turn on 'delivery-enabled' or the bot answers nobody"));
+        lines.add("access: " + requestPolicy.statusLine());
+        lines.add("replies via: /msg (private message)");
+
+        List<String> carriedShulkers = new ArrayList<>();
+        for (KitSources.NamedStack stack : KitChestSource.namedStacksInInventory()) {
+            if (stack.isShulker()) carriedShulkers.add("'" + stack.displayName() + "'");
+        }
+        lines.add("carried shulkers: " + (carriedShulkers.isEmpty()
+            ? "(none - carry a box renamed after the kit to serve it by name)"
+            : String.join(", ", carriedShulkers)));
+        lines.add("loadouts: " + (loadouts.names().isEmpty()
+            ? "(none)" : String.join(", ", loadouts.names())));
+
+        // Per-kit readiness: for every loadout and every carried shulker-named kit, say how it would be served.
+        List<String> kits = new ArrayList<>(loadouts.names());
+        for (KitSources.NamedStack stack : KitChestSource.namedStacksInInventory()) {
+            if (!stack.isShulker()) continue;
+            String name = KitSources.normalize(stack.displayName());
+            if (!name.isEmpty() && kits.stream().noneMatch(k -> k.equalsIgnoreCase(name))) kits.add(name);
+        }
+        if (kits.isEmpty()) {
+            lines.add("-> nothing is registered: add a loadout ('/bh kit loadout create <name>') or carry a "
+                + "shulker renamed after the kit");
+            return lines;
+        }
+        for (String kit : kits) {
+            lines.add("kit '" + kit + "': " + describeKitSource(kit));
+        }
+        return lines;
+    }
+
+    /** The shulker boxes the bot is carrying, with the kit each one would answer, for the terminal and menu. */
+    public List<String> describeCarriedShulkers() {
+        List<String> lines = new ArrayList<>();
+        for (KitSources.NamedStack stack : KitChestSource.namedStacksInInventory()) {
+            if (!stack.isShulker()) continue;
+            String name = stack.displayName();
+            boolean hasLoadout = loadouts.contains(name);
+            lines.add("'%s' x%d%s".formatted(name, stack.count(),
+                hasLoadout ? " (also a registered loadout)" : " -> answers '>lxkit " + KitSources.normalize(name) + "'"));
+        }
+        if (lines.isEmpty()) lines.add("no shulker boxes carried");
+        return lines;
+    }
+
+    /** Whether serving kits by carried shulker name is on. */
+    public boolean isNameKits() {
+        return nameKits.get();
     }
 
     /** The configured chest search radius. */

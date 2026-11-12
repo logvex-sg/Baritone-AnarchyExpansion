@@ -39,14 +39,16 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
   history cursor and draft restore, the shortcut table, registry dispatch/aliases, per-subcommand
   permission levels, the confirmation gate, tab completion and the macro store. 86 assertions, pure.
 - `sixbtLogicTest` — the 6b6t suite: the server command catalogue and address check, the chat line
-  parser (vanilla/ranked senders, command echo, tpa requests), kit-request parsing (the `>lxkit` prefix
-  and the `bare-requests` rule), the `KitDeliveryMachine` state machine and every failure path including
+  parser (vanilla/ranked/bare `Name:`/`Name »` senders, command echo, tpa requests), kit-request parsing
+  (the `>lxkit` prefix and the `bare-requests` rule), the `KitDeliveryMachine` state machine and every
+  failure path including
   the 5s confirmation window, the bounded `KitRequestQueue`, `KitMessages` (defaults, overrides,
   placeholder rendering, `/msg` formatting), `KitRequestFlow` (which reply a request earns, and the
   access-before-kit-name order), `ChestKitSearch` (complete/partial/no-source), kit loadouts and their
-  parsing, the restock comparison, the TPS and hotspot parsers, the `TpaPolicy`, `KitRequestPolicy` and
-  the home book. 181 assertions, pure — which is what makes a bot that teleports and kills itself safe
-  to change.
+  parsing, the restock comparison, `KitSources` (kit-name-to-container normalisation and matching, and
+  the "a carried shulker renamed after the kit answers the request" rule), the TPS and hotspot parsers,
+  the `TpaPolicy`, `KitRequestPolicy` and the home book. 215 assertions, pure — which is what makes a bot
+  that teleports and kills itself safe to change.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
@@ -134,6 +136,7 @@ src/main/java/dev/basehunt/bhclient/
 │                                  cooldown + position), KitRequestPolicy (whitelist/blacklist/open),
 │                                  KitRequestFlow (which reply a request earns), KitMessages
 │                                  (configurable reply catalogue), ChestKitSearch (kit-in-container),
+│                                  KitSources (kit name <-> container name normalisation and match),
 │                                  KitLoadout / KitLoadoutRegistry / KitRestockPlan (kit-maker loadouts),
 │                                  HomeBook (homes + limit), TpaPolicy, TpsMonitor, HotspotInfo
 ├── modules/                     BaseHunter (v1), BaseHunterV2, NewChunks, StashFinder,
@@ -316,6 +319,15 @@ machine's `CONFIRMING` state) before it says "delivered" and runs `/kill`, so th
 kit up. `ChestKitSource` is the one place that decides where a kit comes from (inventory + nearby
 containers); the client cannot read an unopened chest, so a never-opened container is reported as "not
 stocked", never as a false empty.
+
+**A kit can be an item list or a renamed container.** `KitLoadout` is the explicit form; the other form
+is a shulker box renamed after the kit (a box called `totem` answers `>lxkit totem`). `KitSources` owns
+the matching and is the only place that decides whether a kit name refers to a container: both sides are
+normalised (case, `§` codes, `_`→space, a trailing `shulker`/`shulker box`, a leading `kit `) and the
+name must be exact or followed by a non-alphanumeric separator, so `totems` never answers `totem`. When a
+kit resolves by name, `KitDeliveryService.setNameFilter` makes the delivery drop that stack instead of a
+loadout item; `KitBot.nameKits` (`shulker-kits`) gates the whole path. Keep `kitExists` in
+`handleDeliveryChat` the single place that decides servability, and keep it in step with `canServe`.
 
 **Persisted records decode tolerantly through `RecordCodec`.** Every store writes a `version` int and
 a list of record compounds; `fromTag` reads them via `RecordCodec.decodeList`, which skips an entry that

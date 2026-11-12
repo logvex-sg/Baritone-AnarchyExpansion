@@ -574,14 +574,14 @@ the terminal). The kinds are:
 | `grabbing` | `Grabbing the kit, please wait.` | The request was accepted; the bot is fetching the kit. |
 | `not_whitelisted` | `Not whitelisted (contact logvex).` | The requester is not on the allow-list (or is blocked). |
 | `unknown_kit` | `Kit doesnt exist.` | No loadout is registered under that name. |
-| `cooldown` | `Error, {seconds} minute cooldown active.` | The requester asked again inside the cooldown. |
+| `cooldown` | `Error, {minutes} minute cooldown active.` | The requester asked again inside the cooldown. |
 | `queue_full` | `Error, too many kits (max {max}).` | The queue is full. |
 | `queued` | `You are in the queue, please wait. You are in place {place}.` | Accepted, with their queue position. |
 | `delivered` | `Kit delivered.` | Sent after the confirmation window. |
 | `failed` | `Error, the delivery could not be completed.` | The delivery failed (timeout, requester left). |
 
-Templates may use `{player}`, `{kit}`, `{place}`, `{seconds}` and `{max}`; an unknown placeholder is
-left as-is rather than breaking the reply. Edit one with `/bh kit message cooldown Error, wait {seconds}
+Templates may use `{player}`, `{kit}`, `{place}`, `{minutes}` and `{max}`; an unknown placeholder is
+left as-is rather than breaking the reply. Edit one with `/bh kit message cooldown Error, wait {minutes}
 minutes.` — the token is the kind name and the rest of the line is the template.
 
 ##### Storage and the delivery
@@ -592,6 +592,51 @@ the loadout in your own inventory and in nearby registered containers within `ch
 the client until that chest has been opened, so a container the bot has never opened reads as empty and
 cannot be searched — the bot reports "not stocked" rather than pretending. Open your storage once (the
 addon remembers it) and it can be used from then on.
+
+##### Two ways to stock a kit
+
+There are two ways to tell the bot what a kit contains, and they can be mixed freely.
+
+**1. A loadout** — an explicit item list, edited with `/bh kit loadout …` or the *Edit* button in the
+menu. Best for a kit you assemble from loose items (a `pvp` kit of netherite + gapples + a totem).
+
+**2. A named shulker box** — pre-pack a shulker box, rename it after the kit, and carry it. The box
+name *is* the kit name. This is the quickest way to make a kit: a box called `totem` answers
+`>lxkit totem` with no loadout to configure.
+
+```
+Box renamed "totem"        ->  a request for  >lxkit totem   is served by dropping that box
+Box renamed "totem shulker" ->  same
+Box renamed "§6Totem"      ->  same  (colour codes are ignored)
+Box renamed "totem_2"      ->  same  (underscores read as spaces; "2" is a separator)
+```
+
+The kit name and the box name are matched after both are **normalised**, so the same kit answers to
+every way you might write it:
+
+| You write | Normalises to | Notes |
+| --- | --- | --- |
+| `Totem` | `totem` | case is ignored |
+| `§6totem` | `totem` | `§` colour/format codes are stripped |
+| `totem_shulker_box` | `totem` | `_` becomes a space; a trailing `shulker`/`shulker box` is removed |
+| `totem 2` / `totem-2` | `totem 2` | a number after the name still matches `totem` |
+| `kit totem` | `totem` | a leading `kit ` is removed |
+
+A near-miss does **not** match: a box called `totems` will not answer `>lxkit totem`, so an accidental
+typo delivers nothing rather than the wrong kit. The box must be a shulker box (any colour) and the bot
+must be **carrying** it — a delivery drops the box it holds. Use `/bh kit shulkers` to list the boxes
+you are carrying and the kit each one answers, and `/bh kit source <kit>` to check one kit.
+
+Name-based kits are controlled by `kit-bot → shulker-kits` (on by default). Turn it off to require an
+explicit loadout for every kit. When a request name is neither a loadout nor a carried shulker, the bot
+replies `unknown_kit` (`Kit doesnt exist.`) — that reply, rather than silence, is the usual sign the
+name did not match.
+
+##### The kit name in the request
+
+The requested kit is the token after the prefix: `>lxkit totem` requests the kit `totem` (a prefix
+ending in `kit` implies the keyword, so no second `kit` is needed). `bare-requests` controls whether a
+non-`kit` prefix needs the keyword.
 
 Each request enters a bounded queue (`queue-capacity`, default 3) with a per-player cooldown
 (`request-cooldown`, default 600s = 10 minutes), so a spammer cannot flood it and cannot be served

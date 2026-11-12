@@ -77,13 +77,6 @@ public class MendingManager extends Module {
         .build()
     );
 
-    private final Setting<Boolean> repairArmor = sgTargets.add(new BoolSetting.Builder()
-        .name("repair-armor")
-        .description("Repair worn Mending armour by bringing it to the offhand in turn.")
-        .defaultValue(false)
-        .build()
-    );
-
     private final Setting<Boolean> repairCarried = sgTargets.add(new BoolSetting.Builder()
         .name("repair-carried")
         .description("Repair damaged Mending items carried in the main inventory.")

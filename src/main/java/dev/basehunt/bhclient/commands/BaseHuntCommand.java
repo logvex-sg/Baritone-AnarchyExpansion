@@ -1130,6 +1130,16 @@ public class BaseHuntCommand extends Command {
                     if (bot != null) info("%s", bot.describeKitSource(StringArgumentType.getString(context, "kit")));
                     return SINGLE_SUCCESS;
                 })))
+            .then(literal("shulkers").executes(context -> {
+                KitBot bot = Modules.get().get(KitBot.class);
+                if (bot != null) for (String line : bot.describeCarriedShulkers()) info("%s", line);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("doctor").executes(context -> {
+                KitBot bot = Modules.get().get(KitBot.class);
+                if (bot != null) for (String line : bot.diagnose()) info("%s", line);
+                return SINGLE_SUCCESS;
+            }))
             .then(literal("gui").executes(context -> {
                 dev.basehunt.bhclient.gui.SixbtMenuScreen.open(GuiThemes.get());
                 return SINGLE_SUCCESS;

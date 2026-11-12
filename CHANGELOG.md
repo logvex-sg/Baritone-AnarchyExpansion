@@ -3,6 +3,55 @@
 All notable changes to the Baritone Anarchy Expansion. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The kit bot no longer abandons every delivery seconds after it starts.** A delivery begins with a
+  `/tpa` to a requester who is, by definition, out of render range. The runtime read "not in the loaded
+  world" as "the requester left" and failed the delivery after five seconds — before the teleport could
+  land — so the bot appeared to do nothing at all. A missing requester now only counts as a departure
+  once they have actually been seen (i.e. after the teleport lands), via the new
+  `RequesterPresence`. Presence, not proximity, is what fails a delivery, so a requester who steps a few
+  blocks away to pick items up is not treated as gone either.
+- **A carried shulker box renamed after a kit now wins over a registered loadout.** When both exist (a
+  `totem` loadout *and* a `totem` shulker box, the reported setup), the box is the concrete stock the bot
+  can drop as-is, so it is used for the delivery instead of the item loadout.
+- **Removed settings that did nothing.** `reverse-on-arrival`, `stop-on-stash` (Base Hunter v1),
+  `unsafe-altitude-margin`, `baritone-pregen`, `pregen-leg-length` (Base Hunter v2), `repair-armor`
+  (Mending) and `storage-network → arrival-distance` were declared but never read. The first six are gone;
+  `arrival-distance` is now actually enforced.
+
+### Added
+
+- **`/bh kit doctor` (and `kit doctor` in the terminal, and a *Self-check* button in the 6b6t menu).**
+  Prints why a kit request would or would not be served right now: whether delivery is on, who may
+  request, which replies are whispered, the shulker boxes carried, the loadouts registered, and a
+  per-kit readiness line. This turns the commonest "the bot does not react" causes into one command.
+- All kit-bot replies are whispered with `/msg <player> …` and never posted in public chat; the menu now
+  states this and `doctor` reports it.
+
+### Documentation
+
+- `docs/GUIDE.md` documents the `/bh kit doctor` self-check and the whisper-only replies.
+
+- **The kit bot now reacts to a kit stocked as a renamed shulker box.** The common 6b6t setup — a
+  shulker box renamed after the kit (a box called `totem` for `>lxkit totem`) — was not recognised: the
+  bot parsed the request, found no *loadout* of that name, and answered `Kit doesnt exist.`. A carried
+  shulker box whose name matches the request is now served directly (drop the box, confirm, reset), with
+  no loadout to configure. Toggle with `kit-bot → shulker-kits` (on by default); `/bh kit shulkers` lists
+  the boxes carried and the kit each one answers.
+- **Kit names and container names are matched after normalisation.** Case, `§` colour codes, `_`/spaces,
+  a trailing `shulker`/`shulker box`, and a leading `kit ` are ignored, so `§6Totem`,
+  `totem_shulker_box` and `kit totem` all answer `>lxkit totem`. A near-miss (`totems`) still does not
+  match, so a typo delivers nothing rather than the wrong kit.
+- **Bare `Name: message` and `Name » message` chat lines are now parsed.** A server that writes the
+  sender without a `<...>` or `[Rank]` wrapper previously produced no sender, so requests on those
+  servers were silently ignored. The sender is only accepted when it reads as a username, so an ordinary
+  sentence containing a colon is not mistaken for a speaker.
+- The kit-maker docs stated the cooldown template used `{seconds}`; the code substitutes `{minutes}`.
+  Docs corrected.
+
 ## [2.6.1] — 2026-11-12
 
 The rename release. The project is now **Baritone Anarchy Expansion** to match the repository

@@ -67,20 +67,33 @@ public final class SixbtChat {
             cursor = close + 1;
             while (cursor < line.length() && line.charAt(cursor) == ' ') cursor++;
         }
-        if (cursor > 0 && cursor < line.length()) {
-            int colon = line.indexOf(':', cursor);
-            if (colon > cursor) {
-                String sender = line.substring(cursor, colon).trim();
-                String body = line.substring(colon + 1).trim();
-                // Only treat it as a sender when the name has no spaces and is short, so a sentence with a
-                // colon is not mistaken for a speaker.
-                if (!sender.isEmpty() && sender.length() <= 16 && sender.indexOf(' ') < 0) {
-                    return new Line(sender, body, line, commandEcho);
-                }
-            }
+        if (cursor < line.length()) {
+            // A server that puts the sender first without a rank tag writes "Name: message" or "Name » msg".
+            Line split = splitSender(line.substring(cursor), line, commandEcho);
+            if (split != null) return split;
         }
 
         return new Line("", line, line, commandEcho);
+    }
+
+    /**
+     * Splits {@code Name: body} / {@code Name » body} at the first separator, but only when the name reads as
+     * a username. The check is what keeps an ordinary sentence containing a colon - "server restarting soon:
+     * be careful" - from being read as a speaker.
+     */
+    private static Line splitSender(String text, String raw, boolean commandEcho) {
+        int best = -1;
+        for (char separator : new char[] { ':', '\u00bb', '\u203a' }) {
+            int index = text.indexOf(separator);
+            if (index >= 0 && (best < 0 || index < best)) best = index;
+        }
+        if (best <= 0) return null;
+
+        String sender = text.substring(0, best).trim();
+        if (!KitSources.isUsername(sender)) return null;
+
+        String body = text.substring(best + 1).trim();
+        return new Line(sender, body, raw, commandEcho);
     }
 
     /**
