@@ -39,10 +39,13 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
   history cursor and draft restore, the shortcut table, registry dispatch/aliases, per-subcommand
   permission levels, the confirmation gate, tab completion and the macro store. 86 assertions, pure.
 - `sixbtLogicTest` — the 6b6t suite: the server command catalogue and address check, the chat line
-  parser (vanilla/ranked senders, command echo, tpa requests), kit-request parsing, the
-  `KitDeliveryMachine` state machine and every failure path, the bounded `KitRequestQueue`, kit
-  loadouts and their parsing, the restock comparison, the TPS and hotspot parsers, the `TpaPolicy` and
-  the home book. 106 assertions, pure — which is what makes a bot that teleports and kills itself safe
+  parser (vanilla/ranked senders, command echo, tpa requests), kit-request parsing (the `>lxkit` prefix
+  and the `bare-requests` rule), the `KitDeliveryMachine` state machine and every failure path including
+  the 5s confirmation window, the bounded `KitRequestQueue`, `KitMessages` (defaults, overrides,
+  placeholder rendering, `/msg` formatting), `KitRequestFlow` (which reply a request earns, and the
+  access-before-kit-name order), `ChestKitSearch` (complete/partial/no-source), kit loadouts and their
+  parsing, the restock comparison, the TPS and hotspot parsers, the `TpaPolicy`, `KitRequestPolicy` and
+  the home book. 181 assertions, pure — which is what makes a bot that teleports and kills itself safe
   to change.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
@@ -126,9 +129,12 @@ src/main/java/dev/basehunt/bhclient/
 │   └── kit/                       Kit, KitRegistry, KitResponses (classify the server's reply)
 │   └── sixbt/                     6b6t server logic (pure): SixbtCommand (command catalogue +
 │                                  address check), SixbtChat (chat line + kit-request + tpa parsing),
-│                                  KitDeliveryMachine (delivery state machine, actions as data),
-│                                  KitRequestQueue (bounded, per-player cooldown), KitLoadout /
-│                                  KitLoadoutRegistry / KitRestockPlan (kit-maker loadouts),
+│                                  KitDeliveryMachine (delivery state machine, actions as data, plus
+│                                  the 5s confirmation window), KitRequestQueue (bounded, per-player
+│                                  cooldown + position), KitRequestPolicy (whitelist/blacklist/open),
+│                                  KitRequestFlow (which reply a request earns), KitMessages
+│                                  (configurable reply catalogue), ChestKitSearch (kit-in-container),
+│                                  KitLoadout / KitLoadoutRegistry / KitRestockPlan (kit-maker loadouts),
 │                                  HomeBook (homes + limit), TpaPolicy, TpsMonitor, HotspotInfo
 ├── modules/                     BaseHunter (v1), BaseHunterV2, NewChunks, StashFinder,
 │                                PlayerLogger, AutoLog, WebhookNotifier, MendingManager,
@@ -142,6 +148,7 @@ src/main/java/dev/basehunt/bhclient/
 │                                SixbtHotspotTracker, SixbtPlayerTracker (the 6b6t modules)
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
 │                                StorageRegistry, WorkflowManager, KitBotStore, KitLoadoutStore,
+│                                KitChestSource (sources a kit from inventory + nearby containers),
 │                                SixbtServerStore, SixbtPlayerStore (persisted per-server state),
 │                                AutomationEngine (task queue + factories), NavigationManager
 │                                (single owner of "go to a position"), DatabaseIO (export/import),
@@ -291,12 +298,24 @@ player names.
 
 **The 6b6t feature set is pure logic plus a thin skin.** `core/sixbt/` holds every decision — the
 command catalogue, the chat/kit-request/tpa parsers, the kit-delivery state machine (whose actions are
-data: `SendTpa`, `DropItem`, `KillSelf`, …), the request queue, loadouts and the home book — and touches
-no Minecraft class, so `sixbtLogicTest` covers it headlessly. The modules and `systems/KitDeliveryService`
-only carry the actions out on the client. Keep new 6b6t behaviour on the pure side of that line or the
-suite cannot reach it. The kit-maker role is **off by default** (`delivery-enabled`): it teleports the
-player to a stranger and then kills them, so it must never be an accidental default. It uses only
-ordinary client actions (`/tpa`, `PlayerEntity.dropItem`, `/kill`) — no packet spoofing.
+data: `SendTpa`, `DropItem`, `KillSelf`, …), the request queue, the access policy, the reply flow, the
+message catalogue, the chest search, loadouts and the home book — and touches no Minecraft class, so
+`sixbtLogicTest` covers it headlessly. The modules and `systems/KitDeliveryService` only carry the
+actions out on the client. Keep new 6b6t behaviour on the pure side of that line or the suite cannot
+reach it. The kit-maker role is **off by default** (`delivery-enabled`): it teleports the player to a
+stranger and then kills them, so it must never be an accidental default. It uses only ordinary client
+actions (`/tpa`, `PlayerEntity.dropItem`, `/kill`) — no packet spoofing.
+
+**The kit maker is closed by default and answers in whispers.** A request prefix is public chat, so
+`KitRequestPolicy` refuses anyone not on `whitelist` unless `allow-anyone` is on, and `blacklist` wins
+over both. `KitRequestFlow.evaluate` fixes the reply order — access, then kit name, then queue state —
+so a stranger learns nothing about which kits exist; keep that order when adding a reply kind. Every
+reply is a `/msg` built from `KitMessages`, and every template is user-editable, so never hard-code a
+reply string in the module. The delivery holds position for `confirm-delay` seconds after the drop (the
+machine's `CONFIRMING` state) before it says "delivered" and runs `/kill`, so the requester can pick the
+kit up. `ChestKitSource` is the one place that decides where a kit comes from (inventory + nearby
+containers); the client cannot read an unopened chest, so a never-opened container is reported as "not
+stocked", never as a false empty.
 
 **Persisted records decode tolerantly through `RecordCodec`.** Every store writes a `version` int and
 a list of record compounds; `fromTag` reads them via `RecordCodec.decodeList`, which skips an entry that

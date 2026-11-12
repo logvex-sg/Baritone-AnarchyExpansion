@@ -49,6 +49,8 @@ public class SixbtMenuScreen extends WindowScreen {
     public void initWidgets() {
         serverSection();
         kitSection();
+        accessSection();
+        messageSection();
         loadoutSection();
         homeSection();
         tpaSection();
@@ -97,6 +99,67 @@ public class SixbtMenuScreen extends WindowScreen {
 
         WButton settings = actions.add(theme.button("Settings")).expandX().widget();
         settings.action = () -> openModule(KitBot.class);
+    }
+
+    private void accessSection() {
+        add(theme.section("Kit Access")).expandX().widget();
+
+        if (bot == null) {
+            add(theme.label("The kit bot module is not loaded."));
+            return;
+        }
+
+        add(theme.label("Who may request: " + bot.whitelistStatusLine()));
+        for (String line : bot.describeAccess()) add(theme.label(line));
+
+        var toggleRow = add(theme.horizontalList()).expandX().widget();
+        WButton openToggle = toggleRow.add(theme.button(bot.isAllowAnyone() ? "Anyone: On" : "Anyone: Off"))
+            .expandX().widget();
+        openToggle.action = () -> {
+            bot.setAllowAnyone(!bot.isAllowAnyone());
+            reload();
+        };
+
+        var addRow = add(theme.horizontalList()).expandX().widget();
+        var nameBox = addRow.add(theme.textBox("", "player name")).expandX().widget();
+        WButton allow = addRow.add(theme.button("Allow")).widget();
+        allow.action = () -> {
+            String name = nameBox.get().trim();
+            if (!name.isEmpty()) {
+                bot.addToWhitelist(name);
+                reload();
+            }
+        };
+        WButton block = addRow.add(theme.button("Block")).widget();
+        block.action = () -> {
+            String name = nameBox.get().trim();
+            if (!name.isEmpty()) {
+                bot.addToBlacklist(name);
+                reload();
+            }
+        };
+    }
+
+    private void messageSection() {
+        add(theme.section("Kit Messages")).expandX().widget();
+
+        if (bot == null) {
+            add(theme.label("The kit bot module is not loaded."));
+            return;
+        }
+
+        add(theme.label("Whispered replies; each one is editable."));
+        for (dev.basehunt.bhclient.core.sixbt.KitMessages.Kind kind
+            : dev.basehunt.bhclient.core.sixbt.KitMessages.Kind.values()) {
+            String key = kind.name().toLowerCase(java.util.Locale.ROOT);
+            var row = add(theme.horizontalList()).expandX().widget();
+            var box = row.add(theme.textBox(bot.messages().template(kind), key)).expandX().widget();
+            WButton save = row.add(theme.button("Save")).widget();
+            save.action = () -> {
+                bot.setMessage(key, box.get());
+                reload();
+            };
+        }
     }
 
     private void loadoutSection() {

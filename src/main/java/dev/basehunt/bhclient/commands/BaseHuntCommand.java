@@ -1052,6 +1052,84 @@ public class BaseHuntCommand extends Command {
                     return SINGLE_SUCCESS;
                 }))
             )
+            .then(literal("whitelist")
+                .executes(context -> {
+                    kitWhitelistStatus();
+                    return SINGLE_SUCCESS;
+                })
+                .then(literal("list").executes(context -> {
+                    kitWhitelistStatus();
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("add")
+                    .then(argument("player", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot != null) info("%s", bot.addToWhitelist(StringArgumentType.getString(context, "player")));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("remove")
+                    .then(argument("player", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot != null) info("%s", bot.removeFromWhitelist(StringArgumentType.getString(context, "player")));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("block")
+                    .then(argument("player", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot != null) info("%s", bot.addToBlacklist(StringArgumentType.getString(context, "player")));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("unblock")
+                    .then(argument("player", StringArgumentType.word()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot != null) info("%s", bot.removeFromBlacklist(StringArgumentType.getString(context, "player")));
+                        return SINGLE_SUCCESS;
+                    })))
+                .then(literal("open").executes(context -> {
+                    KitBot bot = Modules.get().get(KitBot.class);
+                    if (bot != null) {
+                        bot.setAllowAnyone(true);
+                        info("Kit bot is now open to anyone.");
+                    }
+                    return SINGLE_SUCCESS;
+                }))
+                .then(literal("close").executes(context -> {
+                    KitBot bot = Modules.get().get(KitBot.class);
+                    if (bot != null) {
+                        bot.setAllowAnyone(false);
+                        info("Kit bot is now whitelist-only.");
+                    }
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("messages").executes(context -> {
+                KitBot bot = Modules.get().get(KitBot.class);
+                if (bot != null) bot.describeMessages().forEach(line -> info("%s", line));
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("message")
+                .then(argument("kind", StringArgumentType.word())
+                    .suggests((ctx, sugg) -> {
+                        for (dev.basehunt.bhclient.core.sixbt.KitMessages.Kind kind
+                            : dev.basehunt.bhclient.core.sixbt.KitMessages.Kind.values()) {
+                            sugg.suggest(kind.name().toLowerCase(java.util.Locale.ROOT));
+                        }
+                        return sugg.buildFuture();
+                    })
+                    .then(argument("text", StringArgumentType.greedyString()).executes(context -> {
+                        KitBot bot = Modules.get().get(KitBot.class);
+                        if (bot != null) {
+                            info("%s", bot.setMessage(StringArgumentType.getString(context, "kind"),
+                                StringArgumentType.getString(context, "text")));
+                        }
+                        return SINGLE_SUCCESS;
+                    }))))
+            .then(literal("source")
+                .then(argument("kit", StringArgumentType.word()).executes(context -> {
+                    KitBot bot = Modules.get().get(KitBot.class);
+                    if (bot != null) info("%s", bot.describeKitSource(StringArgumentType.getString(context, "kit")));
+                    return SINGLE_SUCCESS;
+                })))
             .then(literal("gui").executes(context -> {
                 dev.basehunt.bhclient.gui.SixbtMenuScreen.open(GuiThemes.get());
                 return SINGLE_SUCCESS;
@@ -1292,6 +1370,15 @@ public class BaseHuntCommand extends Command {
             return;
         }
         bot.describeDelivery().forEach(line -> info("%s", line));
+    }
+
+    private void kitWhitelistStatus() {
+        KitBot bot = Modules.get().get(KitBot.class);
+        if (bot == null) {
+            error("The kit bot is not loaded.");
+            return;
+        }
+        bot.describeAccess().forEach(line -> info("%s", line));
     }
 
     private void kitLoadoutList() {

@@ -528,20 +528,77 @@ kit claim <name>` claims one and `/bh kit all` claims every ready kit. Kit state
 #### Kit maker (6b6t delivery)
 
 On 6b6t the server does not hand out kits at all — players do. A kit maker watches chat for a request
-like `!kit pvp`, teleports to the requester with `/tpa`, drops the items, and kills itself to reset.
+like `>lxkit pvp`, teleports to the requester with `/tpa`, drops the items, and kills itself to reset.
 `kit-bot` can be that bot.
 
 Enable `kit-bot → delivery-enabled`. It is off by default because the role teleports you to a stranger
 and then kills you, which nobody should get by accident. Then build the kits it may hand out as
 **loadouts**: `/bh kit loadout create pvp`, `/bh kit loadout add pvp diamond_sword 1`, `/bh kit loadout
 add pvp golden_apple 8`, or open the 6b6t menu and use *Edit* on a kit — *Add Held Item* takes the item
-in your hand, which is the quickest way to record a loadout.
+in your hand, which is the quickest way to record a loadout. Loadouts are unlimited: add as many kits,
+and as many item lines per kit, as you like.
 
-A delivery is only started when you are carrying the whole loadout (`require-stock`); otherwise it is
-refused with the shortfall (`/bh kit restock pvp`). Each request enters a bounded queue with a
-per-player cooldown, so a spammer cannot flood it and cannot be served twice. The delivery itself is
-driven by a pure state machine with explicit failure paths — a refused teleport, a timeout, or a
-requester who leaves — and it never loops a failed teleport. `/bh kit delivery` shows the state and the
+##### Who may use it — the whitelist
+
+A kit bot's request prefix is public, so **the bot is closed by default**: nobody is served until you
+add them. Manage it from `/bh kit whitelist …` (or `kit whitelist …` in the terminal, or the **Kit
+Access** section of the 6b6t menu):
+
+| Command | Effect |
+| --- | --- |
+| `/bh kit whitelist` / `… list` | Show the allow-list, block-list and open/closed state. |
+| `/bh kit whitelist add <player>` | Let a player request kits. |
+| `/bh kit whitelist remove <player>` | Remove them from the allow-list. |
+| `/bh kit whitelist block <player>` | Always refuse a player, even when open. |
+| `/bh kit whitelist unblock <player>` | Remove a block. |
+| `/bh kit whitelist open` / `close` | Serve anyone (block-list still applies) / return to whitelist-only. |
+
+The same three settings (`whitelist`, `blacklist`, `allow-anyone`) are on the module, and the menu
+exposes them as buttons. A blocked player is refused before the allow-list is consulted, so a griefer
+can be shut out without closing the bot.
+
+##### The request prefix
+
+`request-prefixes` defaults to `>lxkit`, so `>lxkit totem` and `>lxkit kit totem` both work (a prefix
+ending in `kit` implies the keyword; `bare-requests` controls the general case). Add more prefixes as a
+list to recognise a server's own bot syntax.
+
+##### Replies
+
+Every reply is a private message (`/msg <player> …`) and every one is editable from
+`kit-bot → messages` (or the **Kit Messages** section of the menu, or `kit message <kind> <text>` in
+the terminal). The kinds are:
+
+| Kind | Default | When |
+| --- | --- | --- |
+| `grabbing` | `Grabbing the kit, please wait.` | The request was accepted; the bot is fetching the kit. |
+| `not_whitelisted` | `Not whitelisted (contact logvex).` | The requester is not on the allow-list (or is blocked). |
+| `unknown_kit` | `Kit doesnt exist.` | No loadout is registered under that name. |
+| `cooldown` | `Error, {seconds} minute cooldown active.` | The requester asked again inside the cooldown. |
+| `queue_full` | `Error, too many kits (max {max}).` | The queue is full. |
+| `queued` | `You are in the queue, please wait. You are in place {place}.` | Accepted, with their queue position. |
+| `delivered` | `Kit delivered.` | Sent after the confirmation window. |
+| `failed` | `Error, the delivery could not be completed.` | The delivery failed (timeout, requester left). |
+
+Templates may use `{player}`, `{kit}`, `{place}`, `{seconds}` and `{max}`; an unknown placeholder is
+left as-is rather than breaking the reply. Edit one with `/bh kit message cooldown Error, wait {seconds}
+minutes.` — the token is the kind name and the rest of the line is the template.
+
+##### Storage and the delivery
+
+A delivery is only started when the kit can actually be sourced (`require-stock`): the bot looks for
+the loadout in your own inventory and in nearby registered containers within `chest-radius` blocks
+(`/bh kit source pvp` reports where, or the shortfall). Minecraft does not send a chest's contents to
+the client until that chest has been opened, so a container the bot has never opened reads as empty and
+cannot be searched — the bot reports "not stocked" rather than pretending. Open your storage once (the
+addon remembers it) and it can be used from then on.
+
+Each request enters a bounded queue (`queue-capacity`, default 3) with a per-player cooldown
+(`request-cooldown`, default 600s = 10 minutes), so a spammer cannot flood it and cannot be served
+twice. The delivery is driven by a pure state machine with explicit failure paths — a refused teleport,
+a timeout, or a requester who leaves — and it never loops a failed teleport. After the items are on the
+ground the bot holds position for `confirm-delay` seconds (default 5) so the requester can pick the kit
+up, and only then says "Kit delivered." and runs `/kill`. `/bh kit delivery` shows the state and the
 queue, `/bh kit queue clear` empties it, and `/bh kit deliver <player> <kit>` starts one by hand.
 
 ## 6b6t server tools

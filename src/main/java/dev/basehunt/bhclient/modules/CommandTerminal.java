@@ -246,7 +246,7 @@ public class CommandTerminal extends Module {
             .sub("stop", ChatPermissions.Level.MOVEMENT)
             .build(), this::baritone);
 
-        registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>]",
+        registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>|whitelist ...]",
             "claim kits, or run the 6b6t kit-maker delivery role", ChatPermissions.Level.READ_ONLY)
             .aliases("kits")
             .sub("list", ChatPermissions.Level.READ_ONLY)
@@ -257,8 +257,13 @@ public class CommandTerminal extends Module {
             .sub("loadout", ChatPermissions.Level.READ_ONLY)
             .sub("restock", ChatPermissions.Level.READ_ONLY)
             .sub("queue", ChatPermissions.Level.READ_ONLY)
+            .sub("whitelist", ChatPermissions.Level.CONTROL)
+            .sub("messages", ChatPermissions.Level.READ_ONLY)
+            .sub("message", ChatPermissions.Level.CONTROL)
+            .sub("source", ChatPermissions.Level.READ_ONLY)
             .completions(index -> index == 0
-                ? List.of("list", "status", "claim", "delivery", "deliver", "loadout", "restock", "queue")
+                ? List.of("list", "status", "claim", "delivery", "deliver", "loadout", "restock", "queue",
+                    "whitelist", "messages", "message", "source")
                 : kitNames())
             .build(), this::kit);
 
@@ -663,6 +668,24 @@ public class CommandTerminal extends Module {
                 }
             }
             case "loadout" -> kitLoadout(context, bot);
+            case "whitelist" -> kitWhitelist(context, bot);
+            case "messages" -> {
+                for (String line : bot.describeMessages()) context.info("%s", line);
+            }
+            case "message" -> {
+                if (context.argCount() < 4) {
+                    context.error("usage: kit message <kind> <text>");
+                    return;
+                }
+                context.info(bot.setMessage(context.arg(1), context.arg(2)));
+            }
+            case "source" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: kit source <kit>");
+                    return;
+                }
+                context.info(bot.describeKitSource(context.arg(1)));
+            }
             case "restock" -> {
                 if (context.argCount() < 2) {
                     context.error("usage: kit restock <kit>");
@@ -670,7 +693,41 @@ public class CommandTerminal extends Module {
                 }
                 for (String line : bot.restockFor(context.arg(1)).describe()) context.info("%s", line);
             }
-            default -> context.error("usage: kit [list|status|claim|delivery|deliver|loadout|restock|queue]");
+            default -> context.error(
+                "usage: kit [list|status|claim|delivery|deliver|loadout|restock|queue|whitelist|messages|"
+                    + "message|source]");
+        }
+    }
+
+    /** {@code kit whitelist <list|add|remove|block|unblock|open|close> [player]} */
+    private void kitWhitelist(TerminalContext context, KitBot bot) {
+        String sub = context.argCount() >= 2 ? context.arg(1).toLowerCase(Locale.ROOT) : "list";
+        switch (sub) {
+            case "list" -> {
+                for (String line : bot.describeAccess()) context.info("%s", line);
+            }
+            case "add", "remove", "block", "unblock" -> {
+                if (context.argCount() < 3) {
+                    context.error("usage: kit whitelist " + sub + " <player>");
+                    return;
+                }
+                String player = context.arg(2);
+                context.info(switch (sub) {
+                    case "add" -> bot.addToWhitelist(player);
+                    case "remove" -> bot.removeFromWhitelist(player);
+                    case "block" -> bot.addToBlacklist(player);
+                    default -> bot.removeFromBlacklist(player);
+                });
+            }
+            case "open" -> {
+                bot.setAllowAnyone(true);
+                context.info("kit bot is now open to anyone");
+            }
+            case "close" -> {
+                bot.setAllowAnyone(false);
+                context.info("kit bot is now whitelist-only");
+            }
+            default -> context.error("usage: kit whitelist [list|add|remove|block|unblock|open|close] [player]");
         }
     }
 

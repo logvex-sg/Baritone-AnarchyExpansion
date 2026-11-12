@@ -77,12 +77,52 @@ public final class KitRequestQueue {
         return requester != null && pending.containsKey(requester.toLowerCase(java.util.Locale.ROOT));
     }
 
+    /** The 1-based position of a pending requester, or 0 when they are not queued. */
+    public int positionOf(String requester) {
+        if (requester == null) return 0;
+        String key = requester.toLowerCase(java.util.Locale.ROOT);
+        int position = 1;
+        for (String pendingKey : pending.keySet()) {
+            if (pendingKey.equals(key)) return position;
+            position++;
+        }
+        return 0;
+    }
+
+    /** The reason a requester is refused without touching the queue: "cooldown" or "full", or null. */
+    public String wouldRefuse(String requester, long nowMillis) {
+        if (requester == null || requester.isBlank()) return "no requester";
+        String key = requester.toLowerCase(java.util.Locale.ROOT);
+        if (pending.containsKey(key)) return "already queued";
+        if (pending.size() >= capacity) return "full";
+        Long served = lastServed.get(key);
+        if (served != null && nowMillis - served < cooldownMillis) return "cooldown";
+        return null;
+    }
+
+    /** The seconds remaining on a requester's cooldown, or 0. */
+    public long cooldownSecondsLeft(String requester, long nowMillis) {
+        if (requester == null) return 0;
+        Long served = lastServed.get(requester.toLowerCase(java.util.Locale.ROOT));
+        if (served == null) return 0;
+        long remaining = cooldownMillis - (nowMillis - served);
+        return remaining <= 0 ? 0 : (remaining + 999) / 1000;
+    }
+
     public boolean remove(String requester) {
         return requester != null && pending.remove(requester.toLowerCase(java.util.Locale.ROOT)) != null;
     }
 
     public int size() {
         return pending.size();
+    }
+
+    public int capacity() {
+        return capacity;
+    }
+
+    public long cooldownMillis() {
+        return cooldownMillis;
     }
 
     public boolean isEmpty() {

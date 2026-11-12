@@ -3,6 +3,68 @@
 All notable changes to the Base Hunting Client. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] — 2026-11-11
+
+The kit-maker release. The 6b6t kit bot learned to talk: a request is answered with a private message,
+the bot's public prefix is guarded by a whitelist, and its replies are configurable. Kits are found in
+storage rather than assumed to be carried, and the delivery holds position for a moment after the drop
+so the requester can actually pick the kit up. The new logic is pure and covered by the headless suite,
+which grows from 106 to 181 assertions; `./gradlew build` is green (41 + 147 + 30 + 196 + 21 + 21 +
+181 + 131 + 86 headless assertions).
+
+### Added — kit request access control
+
+- **The kit bot is closed by default.** Its request prefix is public chat, so left open a stranger
+  could pull the bot across the map, drain the kit supply and (because a delivery ends in `/kill`) get
+  it killed on demand. `KitRequestPolicy` now decides every request against an allow-list, and the
+  allow-list starts empty. `allow-anyone` is the deliberate escape hatch for a bot parked in a safe
+  spot; a `blacklist` refuses a known griefer even then.
+- **Whitelist management** from `/bh kit whitelist …` and `kit whitelist …` in the terminal (`list`,
+  `add`, `remove`, `block`, `unblock`, `open`, `close`), plus buttons in the 6b6t menu's **Kit Access**
+  section. The HUD shows the access state next to the delivery state.
+
+### Added — the request prefix and the bot's voice
+
+- **`request-prefixes` defaults to `>lxkit`.** `>lxkit totem` and `>lxkit kit totem` both work, and more
+  prefixes can be listed to recognise a server's own bot syntax. `bare-requests` controls the general
+  case; a prefix that ends in `kit` implies the keyword.
+- **`KitMessages`, a configurable reply catalogue.** Every situation — grabbing the kit, not
+  whitelisted, kit does not exist, cooldown active, queue full, queued (with position), delivered,
+  failed — has a template, sent as `/msg <player> …`. Templates may use `{player}`, `{kit}`, `{place}`,
+  `{seconds}` and `{max}`; an unknown placeholder is left as-is. Edit them from `kit-bot → messages`, the
+  menu's **Kit Messages** section, `/bh kit message <kind> <text>`, or `kit message <kind> <text>`.
+- **`KitRequestFlow`** decides which reply a request earns, in a fixed order (access, then kit name,
+  then queue state) so a stranger learns nothing about which kits exist. It is pure, so the reply rules
+  are pinned by the headless suite rather than felt live.
+- **The queue now reports position, cooldown and capacity** (`positionOf`, `wouldRefuse`,
+  `cooldownSecondsLeft`) so the "you are in place {place}" and "{seconds} minute cooldown" replies are
+  accurate. Defaults are 3 queued requests and a 10-minute per-player cooldown.
+
+### Added — kits from storage
+
+- **`ChestKitSource` finds a kit in storage instead of assuming it is carried.** A request is only
+  accepted when the whole loadout can be sourced: the bot's own inventory plus every nearby container
+  within `chest-radius` blocks. It reads the live inventory of loaded container block entities *and*
+  falls back to the registry's last-observed contents, so a chest the addon has opened before is usable.
+  `/bh kit source <kit>` (and `kit source <kit>`) reports where the kit is, or the exact shortfall.
+- **Honest limitation, reported not hidden.** Minecraft does not send a chest's contents to the client
+  until that chest has been opened, so a container the bot has never opened reads as empty and cannot be
+  searched; the bot says "not stocked" rather than pretending.
+
+### Changed — delivery confirmation
+
+- **The delivery holds position before it resets.** `KitDeliveryMachine` gained a `CONFIRMING` state:
+  once the items are on the ground the bot waits `confirm-delay` seconds (default 5) so the requester
+  can pick the kit up, then sends "Kit delivered." and runs `/kill`. A requester who leaves during the
+  window fails the delivery instead of being reported as served.
+
+### Added — tests
+
+- 75 new headless assertions across the message catalogue (defaults, overrides, placeholder rendering,
+  `/msg` formatting), the request flow (every reply kind and the access-before-kit-name order), the
+  chest kit search (complete, partial with shortfalls, no source, empty inputs) and the new confirmation
+  state (hold, then hand over; requester leaving during the hold).
+
 ## [2.5.0] — 2026-11-11
 
 The 6b6t release. The addon gains a set of tools built around [6b6t](https://www.6b6t.org/en), a
