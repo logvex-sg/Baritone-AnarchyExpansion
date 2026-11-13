@@ -21,6 +21,7 @@ import dev.basehunt.bhclient.modules.SixbtTpaManager;
 import dev.basehunt.bhclient.modules.SixbtTpsMonitor;
 import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.systems.DatabaseIO;
+import dev.basehunt.bhclient.systems.DeathStore;
 import dev.basehunt.bhclient.systems.EnderChestStore;
 import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.NavigationManager;
@@ -245,6 +246,43 @@ public class CommandTerminal extends Module {
             .sub("status", ChatPermissions.Level.READ_ONLY)
             .sub("stop", ChatPermissions.Level.MOVEMENT)
             .build(), this::baritone);
+
+        registry.register(TerminalCommand.builder("job", "job [status|stop|mine <block> [qty]|goto <x> <y> <z>|follow <player>|explore [x z]|farm [range]|tunnel|build <file> <x> <y> <z>|run <line>]",
+            "run and inspect Baritone jobs (mine, follow, explore, goto, farm, build, tunnel)",
+            ChatPermissions.Level.READ_ONLY)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("stop", ChatPermissions.Level.MOVEMENT)
+            .sub("mine", ChatPermissions.Level.MOVEMENT)
+            .sub("goto", ChatPermissions.Level.MOVEMENT)
+            .sub("follow", ChatPermissions.Level.MOVEMENT)
+            .sub("explore", ChatPermissions.Level.MOVEMENT)
+            .sub("farm", ChatPermissions.Level.MOVEMENT)
+            .sub("tunnel", ChatPermissions.Level.MOVEMENT)
+            .sub("build", ChatPermissions.Level.MOVEMENT)
+            .sub("run", ChatPermissions.Level.MOVEMENT)
+            .completions(index -> index == 0
+                ? List.of("status", "stop", "mine", "goto", "follow", "explore", "farm", "tunnel", "build", "run")
+                : List.of())
+            .build(), this::job);
+
+        registry.register(TerminalCommand.builder("death", "death [list|near|recover|recover-id <id>|clear]",
+            "inspect the recorded deaths and fly back to recover one", ChatPermissions.Level.READ_ONLY)
+            .aliases("deaths")
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .sub("near", ChatPermissions.Level.READ_ONLY)
+            .sub("recover", ChatPermissions.Level.MOVEMENT)
+            .sub("recover-id", ChatPermissions.Level.MOVEMENT)
+            .sub("clear", ChatPermissions.Level.CONTROL, true)
+            .completions(index -> index == 0
+                ? List.of("list", "near", "recover", "recover-id", "clear") : List.of())
+            .build(), this::death);
+
+        registry.register(TerminalCommand.builder("radar", "radar [status|list]",
+            "list the players currently near you", ChatPermissions.Level.READ_ONLY)
+            .aliases("nearby")
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .build(), this::radar);
 
         registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>|whitelist ...]",
             "claim kits, or run the 6b6t kit-maker delivery role", ChatPermissions.Level.READ_ONLY)
@@ -630,6 +668,91 @@ public class CommandTerminal extends Module {
             }
             default -> context.error("usage: baritone [status|stop]");
         }
+    }
+
+    private void job(TerminalContext context) {
+        BaritoneControl control = Modules.get().get(BaritoneControl.class);
+        if (control == null) {
+            context.error("the Baritone control module is not loaded");
+            return;
+        }
+
+        String sub = context.arg(0).toLowerCase(Locale.ROOT);
+        switch (sub.isEmpty() ? "status" : sub) {
+            case "status" -> {
+                for (String line : control.describe()) context.info("%s", line);
+            }
+            case "stop" -> {
+                control.cancel();
+                context.info("Baritone job cancelled.");
+            }
+            case "mine", "goto", "follow", "explore", "farm", "tunnel", "build" -> {
+                if (!control.isActive()) control.enable();
+                context.info("%s", control.run(context.joinFrom(0)));
+            }
+            case "run" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: job run <line>");
+                    return;
+                }
+                if (!control.isActive()) control.enable();
+                context.info("%s", control.run(context.joinFrom(1)));
+            }
+            default -> context.error("usage: job [status|stop|mine <block> [qty]|goto <x> <y> <z>|follow <player>|explore [x z]|farm [range]|tunnel|build <file> <x> <y> <z>|run <line>]");
+        }
+    }
+
+    private void death(TerminalContext context) {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            context.error("the death recovery module is not loaded");
+            return;
+        }
+
+        String sub = context.arg(0).toLowerCase(Locale.ROOT);
+        switch (sub.isEmpty() ? "list" : sub) {
+            case "list" -> {
+                for (String line : recovery.describe()) context.info("%s", line);
+            }
+            case "near" -> context.info("%s", recovery.statusLine());
+            case "recover" -> {
+                if (!recovery.isActive()) recovery.enable();
+                context.info("%s", recovery.recoverNearest());
+            }
+            case "recover-id" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: death recover-id <id>");
+                    return;
+                }
+                int id = context.intArg(1, -1);
+                if (id < 0) {
+                    context.error("id must be a whole number");
+                    return;
+                }
+                if (!recovery.isActive()) recovery.enable();
+                context.info("%s", recovery.recoverById(id));
+            }
+            case "clear" -> {
+                DeathStore store = DeathStore.get();
+                if (store == null) {
+                    context.error("the death store is not loaded");
+                    return;
+                }
+                int removed = store.removeWhere(record -> true);
+                context.info("Cleared %d death record(s).", removed);
+            }
+            default -> context.error("usage: death [list|near|recover|recover-id <id>|clear]");
+        }
+    }
+
+    private void radar(TerminalContext context) {
+        PlayerRadar radar = Modules.get().get(PlayerRadar.class);
+        if (radar == null) {
+            context.error("the player radar module is not loaded");
+            return;
+        }
+        if (!radar.isActive()) radar.enable();
+        for (String line : radar.describe()) context.info("%s", line);
     }
 
     private void kit(TerminalContext context) {

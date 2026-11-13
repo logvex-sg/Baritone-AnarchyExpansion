@@ -11,9 +11,12 @@ import dev.basehunt.bhclient.gui.BaseHuntingScreen;
 import dev.basehunt.bhclient.modules.BaseHunter;
 import dev.basehunt.bhclient.modules.AutoStorage;
 import dev.basehunt.bhclient.modules.AutomationBrain;
+import dev.basehunt.bhclient.modules.BaritoneControl;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.ChatCommands;
 import dev.basehunt.bhclient.modules.CommandTerminal;
+import dev.basehunt.bhclient.modules.DeathRecovery;
+import dev.basehunt.bhclient.modules.PlayerRadar;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -34,6 +37,7 @@ import dev.basehunt.bhclient.modules.SurvivalManager;
 import dev.basehunt.bhclient.modules.WebhookNotifier;
 import dev.basehunt.bhclient.systems.ContainerInteractionManager;
 import dev.basehunt.bhclient.systems.DatabaseIO;
+import dev.basehunt.bhclient.systems.DeathStore;
 import dev.basehunt.bhclient.systems.EnderChestStore;
 import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.PlayerTracker;
@@ -124,6 +128,9 @@ public class BaseHuntCommand extends Command {
         buildV2(builder);
         buildFly(builder);
         buildBaritone(builder);
+        buildJob(builder);
+        buildDeath(builder);
+        buildRadar(builder);
         buildStash(builder);
         buildPlayer(builder);
         buildElytra(builder);
@@ -284,6 +291,210 @@ public class BaseHuntCommand extends Command {
         info("  Pathing: %s, elytra flight: %s",
             BaritoneHelper.isPathing() ? "yes" : "no",
             BaritoneHelper.isElytraLoaded() ? "yes" : "no");
+    }
+
+    /**
+     * {@code /bh job ...} - drives Baritone's own processes (mine, follow, explore, goto, farm, build,
+     * tunnel) through {@link BaritoneControl}, which reports each job as an automation event.
+     */
+    private void buildJob(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("job")
+            .executes(context -> {
+                jobStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                jobStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("stop").executes(context -> {
+                BaritoneControl control = Modules.get().get(BaritoneControl.class);
+                if (control == null) {
+                    error("The Baritone control module is not loaded.");
+                } else {
+                    control.cancel();
+                    info("Baritone job cancelled.");
+                }
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("mine")
+                .then(argument("block", StringArgumentType.word())
+                    .executes(context -> runJob("mine " + StringArgumentType.getString(context, "block")))
+                    .then(argument("quantity", integer(1))
+                        .executes(context -> runJob("mine %s %d".formatted(
+                            StringArgumentType.getString(context, "block"),
+                            getInteger(context, "quantity")))))
+                )
+            )
+            .then(literal("goto")
+                .then(argument("x", integer())
+                    .then(argument("y", integer())
+                        .then(argument("z", integer()).executes(context -> runJob("goto %d %d %d".formatted(
+                            getInteger(context, "x"), getInteger(context, "y"), getInteger(context, "z")))))))
+            )
+            .then(literal("follow")
+                .then(argument("player", StringArgumentType.word())
+                    .executes(context -> runJob("follow " + StringArgumentType.getString(context, "player"))))
+            )
+            .then(literal("explore")
+                .executes(context -> runJob("explore"))
+                .then(argument("x", integer())
+                    .then(argument("z", integer()).executes(context -> runJob("explore %d %d".formatted(
+                        getInteger(context, "x"), getInteger(context, "z"))))))
+            )
+            .then(literal("farm")
+                .executes(context -> runJob("farm"))
+                .then(argument("range", integer(0))
+                    .executes(context -> runJob("farm " + getInteger(context, "range"))))
+            )
+            .then(literal("tunnel").executes(context -> runJob("tunnel")))
+            .then(literal("build")
+                .then(argument("file", StringArgumentType.word())
+                    .then(argument("x", integer())
+                        .then(argument("y", integer())
+                            .then(argument("z", integer()).executes(context -> runJob("build %s %d %d %d".formatted(
+                                StringArgumentType.getString(context, "file"),
+                                getInteger(context, "x"), getInteger(context, "y"), getInteger(context, "z")))))))
+                )
+            )
+            .then(literal("run")
+                .then(argument("line", StringArgumentType.greedyString())
+                    .executes(context -> runJob(StringArgumentType.getString(context, "line"))))
+            )
+        );
+    }
+
+    private int runJob(String line) {
+        BaritoneControl control = Modules.get().get(BaritoneControl.class);
+        if (control == null) {
+            error("The Baritone control module is not loaded.");
+            return SINGLE_SUCCESS;
+        }
+        if (!control.isActive()) control.enable();
+        info("%s", control.run(line));
+        return SINGLE_SUCCESS;
+    }
+
+    private void jobStatus() {
+        BaritoneControl control = Modules.get().get(BaritoneControl.class);
+        if (control == null || !control.isActive()) {
+            info("Baritone jobs: (highlight)inactive");
+            return;
+        }
+        info("Baritone jobs");
+        for (String line : control.describe()) info("  %s", line);
+    }
+
+    /**
+     * {@code /bh death ...} - the recorded death list and recovery. The {@link DeathRecovery} module records
+     * a death automatically; these commands inspect the list and fly back to a spot.
+     */
+    private void buildDeath(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("death")
+            .executes(context -> {
+                deathList();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("list").executes(context -> {
+                deathList();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("recover").executes(context -> {
+                deathRecoverNearest();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("recover-id")
+                .then(argument("id", integer(1)).executes(context -> {
+                    deathRecoverById(getInteger(context, "id"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("near").executes(context -> {
+                deathNearest();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("clear").executes(context -> {
+                DeathStore store = DeathStore.get();
+                if (store == null) {
+                    error("The death store is not loaded.");
+                } else {
+                    int removed = store.removeWhere(record -> true);
+                    info("Cleared %d death record(s).", removed);
+                }
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void deathList() {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        info("Deaths on this server");
+        for (String line : recovery.describe()) info("  %s", line);
+    }
+
+    private void deathNearest() {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        info("%s", recovery.statusLine());
+    }
+
+    private void deathRecoverNearest() {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        if (!recovery.isActive()) recovery.enable();
+        info("%s", recovery.recoverNearest());
+    }
+
+    private void deathRecoverById(int id) {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        if (!recovery.isActive()) recovery.enable();
+        info("%s", recovery.recoverById(id));
+    }
+
+    /**
+     * {@code /bh radar ...} - the nearby-player radar. The {@link PlayerRadar} module watches distances and
+     * reports approaches; these commands show the live contact list.
+     */
+    private void buildRadar(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("radar")
+            .executes(context -> {
+                radarStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                radarStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                radarStatus();
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void radarStatus() {
+        PlayerRadar radar = Modules.get().get(PlayerRadar.class);
+        if (radar == null) {
+            error("The player radar module is not loaded.");
+            return;
+        }
+        if (!radar.isActive()) radar.enable();
+        info("Nearby players");
+        for (String line : radar.describe()) info("  %s", line);
     }
 
     private void buildStash(LiteralArgumentBuilder<CommandSource> builder) {

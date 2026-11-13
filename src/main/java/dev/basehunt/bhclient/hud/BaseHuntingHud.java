@@ -175,6 +175,27 @@ public class BaseHuntingHud extends HudElement {
         .build()
     );
 
+    private final Setting<Boolean> showJob = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-job")
+        .description("Show the running Baritone job (mine, follow, explore, goto, farm, build).")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showRadar = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-radar")
+        .description("Show the nearby-player radar (nearest player and distance).")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showDeaths = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-deaths")
+        .description("Show the nearest un-recovered death and its distance.")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<SettingColor> labelColor = sgGeneral.add(new ColorSetting.Builder()
         .name("label-color")
         .description("Colour of the labels.")
@@ -342,6 +363,25 @@ public class BaseHuntingHud extends HudElement {
             lines.add("Shulkers: " + dev.basehunt.bhclient.systems.ShulkerManager.status());
         }
 
+        dev.basehunt.bhclient.modules.BaritoneControl jobs =
+            Modules.get().get(dev.basehunt.bhclient.modules.BaritoneControl.class);
+        if (showJob.get() && jobs != null && jobs.isRunning()) {
+            lines.add("Job: " + jobs.statusLine());
+        }
+
+        dev.basehunt.bhclient.modules.PlayerRadar radar =
+            Modules.get().get(dev.basehunt.bhclient.modules.PlayerRadar.class);
+        if (showRadar.get() && radar != null && radar.isActive()) {
+            lines.add("Radar: " + radar.statusLine());
+        }
+
+        dev.basehunt.bhclient.modules.DeathRecovery deaths =
+            Modules.get().get(dev.basehunt.bhclient.modules.DeathRecovery.class);
+        if (showDeaths.get() && deaths != null && deaths.isActive()) {
+            String deathLine = deaths.statusLine();
+            if (!deathLine.equals("no deaths")) lines.add("Death: " + deathLine);
+        }
+
         if (showAutomation.get()) {
             AutomationEngine engine = AutomationEngine.get();
             if (engine != null) {
@@ -365,7 +405,6 @@ public class BaseHuntingHud extends HudElement {
             dev.basehunt.bhclient.modules.SixbtTpsMonitor tps =
                 Modules.get().get(dev.basehunt.bhclient.modules.SixbtTpsMonitor.class);
             if (tps != null && tps.isActive()) lines.add("Server TPS: " + tps.statusLine());
-
             dev.basehunt.bhclient.modules.SixbtHotspotTracker hotspot =
                 Modules.get().get(dev.basehunt.bhclient.modules.SixbtHotspotTracker.class);
             if (hotspot != null && hotspot.isActive() && hotspot.current() != null

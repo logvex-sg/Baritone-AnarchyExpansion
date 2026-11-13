@@ -124,7 +124,7 @@ public class HardeningTest {
 
         List<String> keys = DatabaseIO.sectionKeys();
         List<String> expected = List.of("stashes", "players", "enderChests", "exploration",
-            "storage", "workflows", "kits", "kitLoadouts", "sixbtServer", "sixbtPlayers");
+            "storage", "workflows", "kits", "kitLoadouts", "sixbtServer", "sixbtPlayers", "deaths");
 
         check("every persisted store has a section", new ArrayList<>(keys).containsAll(expected)
             && keys.size() == expected.size(), "got " + keys);

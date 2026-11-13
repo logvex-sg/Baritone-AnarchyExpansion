@@ -62,7 +62,7 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `baritone-anarchy-expansion-2.6.1.jar` into `mods`.
+4. Drop `baritone-anarchy-expansion-2.8.0.jar` into `mods`.
 5. Launch the game and look for the **Baritone Anarchy Expansion** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
@@ -171,11 +171,15 @@ All under the **Baritone Anarchy Expansion** category in Meteor's module list.
 | `6b6t-tps` | off | Polls 6b6t's `/tps` and warns when the server or your link is lagging |
 | `6b6t-hotspot` | off | Tracks the current 6b6t Hotspot and can teleport you to it |
 | `6b6t-players` | off | Records 6b6t player sightings with a searchable per-server history |
+| `baritone-control` | off | Runs Baritone jobs (mine, follow, explore, goto, farm, build, tunnel) and reports them |
+| `death-recovery` | off | Records where you died and what you carried, and can fly you back to recover it |
+| `player-radar` | off | Tracks nearby players and warns when one is approaching |
 
 There is also a **Baritone Anarchy Expansion** HUD element with individual toggles for server, position, dimension,
 flight state, new-chunk/stash/player counts, autopilot target and distance, elytra durability, mending
 status, fireworks, free slots, survival warning, exploration progress, control ownership, the active
-automation task, the kit status and the 6b6t lines (server TPS, hotspot, homes and player count).
+automation task, the kit status, the running Baritone job, the nearest player and the nearest
+un-recovered death, and the 6b6t lines (server TPS, hotspot, homes and player count).
 
 ## Configuration notes
 
@@ -328,6 +332,62 @@ Everything is also reachable from the **6b6t menu**: `/bh 6b6t gui`, or the *Ope
 the Baritone Anarchy Expansion screen. The menu lists the server's command catalogue and gives each module a status
 line and its controls. The terminal exposes the same tools as `sixbt status|home|tpa|tps|hotspot|players|server|gui`.
 
+## Anarchy toolkit
+
+Three modules cover the parts of an anarchy session that are not base hunting: gathering and travel
+through Baritone, surviving a death with your loot, and knowing when someone is closing in.
+
+### Baritone jobs — `baritone-control`
+
+Baritone already knows how to mine a block, follow a player, explore chunks and build a schematic. What it
+lacks is one place to start a job, remember it is running, notice when it ends and report that as an event.
+`baritone-control` is that place. Every request is parsed by a strict catalogue first, so a typo is refused
+with a reason instead of being handed to Baritone as a job that silently does nothing.
+
+| Command | What it does |
+| --- | --- |
+| `/bh job mine diamond_ore 64` | Mine 64 diamond ore (a bare `mine diamond_ore` mines until nothing is left) |
+| `/bh job goto 100 64 -200` | Walk to an exact block |
+| `/bh job follow Steve` | Follow a player until cancelled |
+| `/bh job explore 1000 2000` | Run Baritone's chunk explorer around a point |
+| `/bh job farm 32` | Harvest crops within 32 blocks |
+| `/bh job tunnel` | Dig a straight 1×1 tunnel |
+| `/bh job build house.schem 10 70 10` | Build a schematic at an origin |
+| `/bh job stop` | Cancel the job and every Baritone process |
+
+The terminal exposes the same as `job status|stop|mine|goto|follow|explore|farm|tunnel|build|run`. Each job
+publishes `BARITONE_TASK_STARTED`, `BARITONE_TASK_DONE`, `BARITONE_TASK_FAILED` or `BARITONE_TASK_CANCELLED`
+on the automation bus, so a workflow or the automation brain can chain on it. A job that stops moving for
+`idle-grace-ticks` without being cancelled is reported as finished; `auto-pickup` also walks over the drops
+while mining.
+
+### Death recovery — `death-recovery`
+
+The moment that matters most on an anarchy server is the moment you die, because that is where your loot
+is, and vanilla forgets it the instant you respawn. `death-recovery` records the death position, the
+dimension and how much you were carrying, persists it per server, warns you in chat, and (with
+`auto-recover`) flies you back with Baritone after you respawn. A death is marked recovered once you are
+within `recovered-radius` of it, and the list is bounded so a long session cannot grow the file without
+limit.
+
+- `/bh death list` — every death recorded on this server, newest first, with its distance.
+- `/bh death near` — the nearest un-recovered death in your current dimension.
+- `/bh death recover` — fly back to that death.
+- `/bh death recover-id 7` — fly back to a specific death.
+- `/bh death clear` — forget every death.
+
+The terminal exposes the same as `death list|near|recover|recover-id|clear`. Deaths in another dimension
+are not offered as "nearest" — a Nether death is not reachable from the Overworld, so its coordinates would
+mean nothing.
+
+### Player radar — `player-radar`
+
+"There is a player 80 blocks away" is far less useful than "a player is closing on you". `player-radar`
+tracks every nearby player's distance and reports when one enters your range, when one is *approaching*
+(not merely present) and when one leaves, pushing `PLAYER_NEARBY`, `PLAYER_APPROACHING` and
+`PLAYER_LEFT_RANGE` onto the automation bus. It only observes — it never attacks anyone.
+`/bh radar` and the terminal's `radar` list the live contacts, nearest first.
+
 ## Storage and inventory
 
 Six modules share one safe pipeline. Every storage action is planned by pure logic, queued to a single
@@ -379,7 +439,7 @@ See [CHANGELOG.md](CHANGELOG.md). The current release is **2.5.0** — the 6b6t 
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.8.0.jar
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
@@ -404,7 +464,7 @@ src/main/java/dev/basehunt/bhclient/
 │       ├── DeploymentGovernor   bounded deploy/recover policy (FlightController)
 │       ├── BoundedLongSet       size-capped packed-chunk-key set
 │       └── ...                  scoring, planning, classification, codecs
-├── modules/                     the ten user-facing modules
+├── modules/                     the user-facing modules (hunters, storage, 6b6t, anarchy toolkit)
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore,
 │                                ExplorationStore (persisted state), DatabaseIO
 └── utils/                       BaritoneHelper, ElytraController, ElytraManager,

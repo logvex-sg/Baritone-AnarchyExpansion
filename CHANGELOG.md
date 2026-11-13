@@ -3,6 +3,58 @@
 All notable changes to the Baritone Anarchy Expansion. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.8.0] — 2026-11-13
+
+The anarchy-toolkit release. Three modules fill the gaps around base hunting: Baritone jobs (mine, follow,
+explore, goto, farm, build, tunnel) with completion events, death memory with fly-back recovery, and a
+proximity radar that warns when a player is *approaching*, not merely present. Each is built on a pure,
+headlessly tested core, so the new suite grows from 832 to 939 assertions and `./gradlew build` is green
+(21 + 196 + 131 + 147 + 86 + 181 + 21 + 41 + 57 + 58).
+
+### Added — Baritone job toolkit (`baritone-control`)
+
+- **One place to run Baritone's own processes.** `mine`, `follow`, `explore`, `get-to-block`, `farm`,
+  `build` and `tunnel` are started, remembered and watched from a single module, so a job has a lifecycle
+  instead of being a fire-and-forget command.
+- **Strict parsing.** `BaritoneTaskCatalog` validates every request (verb, target, quantity, coordinates)
+  and refuses a malformed one with a reason, so a typo stops at the command line instead of being handed
+  to Baritone as a job that silently does nothing. Quantities are clamped, coordinates range-checked.
+- **Completion detection.** A job that stops moving for `idle-grace-ticks` without being cancelled is
+  reported as finished; a job Baritone drops is reported as failed. Each transition publishes
+  `BARITONE_TASK_STARTED` / `_DONE` / `_FAILED` / `_CANCELLED` on the automation bus.
+- **`/bh job …` and the terminal `job …`** expose every job, `stop`, and a raw `run <line>` passthrough.
+  `auto-pickup` walks over the drops while mining; `stop-on-death` cancels a job when you die.
+- `BaritoneHelper` grew typed wrappers for the process interfaces (mine-by-name, follow/pickup predicates,
+  explore, farm, build, selection) plus a `command(...)` that reports whether Baritone accepted a command.
+  `cancelAllProcesses()` stops every process, not just pathing.
+
+### Added — death recovery (`death-recovery`)
+
+- **A death is remembered, not forgotten.** `DeathMemory` records the position, dimension, timestamp and
+  approximate carried-item count, bounded so a long session cannot grow the list without limit.
+- **Per-server persistence.** `DeathStore` (a new `deaths` database section) keeps the list across a
+  restart, so a recovery run after a crash still has somewhere to go. A single corrupt record is skipped
+  rather than costing the rest of the list.
+- **Fly-back recovery.** `/bh death recover` (and `auto-recover` after respawn) navigates to the nearest
+  un-recovered death *in the current dimension* with Baritone. Deaths in another dimension are never
+  offered as "nearest" — a Nether death is not reachable from the Overworld.
+- **Marked recovered automatically** once you are within `recovered-radius`, and surfaced in the HUD as a
+  distance to the nearest pending death.
+
+### Added — player radar (`player-radar`)
+
+- **Approaching, not merely present.** `ProximityRadar` classifies each contact as ENTERED, APPROACHING,
+  RECEDING, STEADY or LEFT from the change in distance, so an alert means someone is closing on you.
+- **Bounded, evicting contact list** so a busy server cannot grow it without limit; a player not seen for
+  `expire-seconds` is dropped and reported as `PLAYER_LEFT_RANGE`.
+- **Automation events** (`PLAYER_NEARBY`, `PLAYER_APPROACHING`, `PLAYER_LEFT_RANGE`) and a HUD line with
+  the nearest player and distance. It only observes — it never attacks anyone.
+
+### Changed
+
+- The HUD gained toggles for the running job, the nearest player and the nearest un-recovered death.
+- The database export gained a `deaths` section (eleven sections total).
+
 ## [2.6.1] — 2026-11-12
 
 The rename release. The project is now **Baritone Anarchy Expansion** to match the repository

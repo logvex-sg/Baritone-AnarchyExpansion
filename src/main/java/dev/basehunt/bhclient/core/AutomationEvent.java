@@ -108,6 +108,23 @@ public record AutomationEvent(Type type, String source, long timestamp, Map<Stri
         SIXBT_HOTSPOT_ACTIVE,
         SIXBT_HOTSPOT_ENDED,
 
+        // Baritone job control (mine, follow, explore, get-to-block, farm, build)
+        BARITONE_TASK_STARTED,
+        BARITONE_TASK_DONE,
+        BARITONE_TASK_FAILED,
+        BARITONE_TASK_CANCELLED,
+
+        // Player proximity radar
+        PLAYER_NEARBY,
+        PLAYER_APPROACHING,
+        PLAYER_LEFT_RANGE,
+
+        // Death memory and recovery
+        DEATH_RECORDED,
+        DEATH_RECOVERY_STARTED,
+        DEATH_RECOVERED,
+        DEATH_RECOVERY_FAILED,
+
         // System
         SYSTEM_ERROR,
         MILESTONE

@@ -9,13 +9,13 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.8.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs nine plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs ten plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
@@ -47,10 +47,16 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
   parsing, the restock comparison, the TPS and hotspot parsers, the `TpaPolicy`, `KitRequestPolicy` and
   the home book. 181 assertions, pure — which is what makes a bot that teleports and kills itself safe
   to change.
+- `anarchyToolkitTest` — the anarchy-toolkit suite: the `BaritoneTaskCatalog` job parser (every verb,
+  the quantity-first and namespace-tolerance cases, and each rejection), `DeathMemory` (ids, bounded
+  eviction, nearest-death search scoped to server + dimension, recovered marking, id continuity across a
+  rebuild) and `ProximityRadar` (the ENTERED/APPROACHING/RECEDING/STEADY/LEFT transitions, nearest-first
+  ordering, expiry and the contact cap). 58 assertions, pure.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
-  of the real Baritone jar (30 assertions). Baritone is compile-only, so a rename would compile here
+  of the real Baritone jar (57 assertions, including the mine/follow/get-to-block/explore/farm/builder
+  process interfaces the job toolkit drives). Baritone is compile-only, so a rename would compile here
   and only fail at runtime; this catches it at build time.
 
 `./gradlew runClient` needs a display. In a headless container install Xvfb and use software GL:
@@ -111,7 +117,10 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              StorageCategory, ItemClassifier, ContainerLayout, SortPlanner,
 │   │                              InventorySimulator, TransferPlanner, RestockPlanner, ShulkerInventory,
 │   │                              ProtectionRules, ItemRoutingEngine, OperationState, WorkflowEngine,
-│   │                              ItemFilter, QuantityPlanner, ProtectionGuard
+│   │                              ItemFilter, QuantityPlanner, ProtectionGuard,
+│   │                              BaritoneTaskCatalog (parses/validates a Baritone job request),
+│   │                              DeathMemory (bounded death records + nearest-death search),
+│   │                              ProximityRadar (contact list + ENTERED/APPROACHING/LEFT transitions)
 │   ├── task/                      the automation work queue:
 │   │                              Task (name/category/priority/progress/attempts/state),
 │   │                              TaskQueue (one runner at a time, dedupe, retry, cancel),
@@ -145,11 +154,13 @@ src/main/java/dev/basehunt/bhclient/
 │                                6b6t kit maker), AutoStorage, CommandTerminal (the terminal
 │                                runtime: registry ↔ managers),
 │                                SixbtHomeManager, SixbtTpaManager, SixbtTpsMonitor,
-│                                SixbtHotspotTracker, SixbtPlayerTracker (the 6b6t modules)
+│                                SixbtHotspotTracker, SixbtPlayerTracker (the 6b6t modules),
+│                                BaritoneControl (runs Baritone jobs + reports completion),
+│                                DeathRecovery (records deaths + flies back), PlayerRadar (proximity)
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
 │                                StorageRegistry, WorkflowManager, KitBotStore, KitLoadoutStore,
 │                                KitChestSource (sources a kit from inventory + nearby containers),
-│                                SixbtServerStore, SixbtPlayerStore (persisted per-server state),
+│                                SixbtServerStore, SixbtPlayerStore, DeathStore (persisted per-server state),
 │                                AutomationEngine (task queue + factories), NavigationManager
 │                                (single owner of "go to a position"), DatabaseIO (export/import),
 │                                StorageOperations (live container ↔ pure-planner bridge),

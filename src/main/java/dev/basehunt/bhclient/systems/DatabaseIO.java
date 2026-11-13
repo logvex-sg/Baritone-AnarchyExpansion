@@ -47,7 +47,8 @@ public final class DatabaseIO {
         new Section("kits", KitBotStore::get),
         new Section("kitLoadouts", KitLoadoutStore::get),
         new Section("sixbtServer", SixbtServerStore::get),
-        new Section("sixbtPlayers", SixbtPlayerStore::get)
+        new Section("sixbtPlayers", SixbtPlayerStore::get),
+        new Section("deaths", DeathStore::get)
     );
 
     private DatabaseIO() {
