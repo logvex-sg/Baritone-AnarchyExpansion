@@ -196,6 +196,20 @@ public class BaseHuntingHud extends HudElement {
         .build()
     );
 
+    private final Setting<Boolean> showLook = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-look")
+        .description("Show the smooth-look camera target.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showHuman = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-human")
+        .description("Show the current human-behavior gesture.")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<SettingColor> labelColor = sgGeneral.add(new ColorSetting.Builder()
         .name("label-color")
         .description("Colour of the labels.")
@@ -380,6 +394,25 @@ public class BaseHuntingHud extends HudElement {
         if (showDeaths.get() && deaths != null && deaths.isActive()) {
             String deathLine = deaths.statusLine();
             if (!deathLine.equals("no deaths")) lines.add("Death: " + deathLine);
+        }
+
+        dev.basehunt.bhclient.modules.SmoothLook look =
+            Modules.get().get(dev.basehunt.bhclient.modules.SmoothLook.class);
+        if (showLook.get() && look != null && look.isActive() && look.hasTarget()) {
+            lines.add("Look: " + look.statusLine());
+        }
+
+        dev.basehunt.bhclient.modules.HumanBehaviorModule human =
+            Modules.get().get(dev.basehunt.bhclient.modules.HumanBehaviorModule.class);
+        if (showHuman.get() && human != null && human.isActive() && human.isGesturing()) {
+            lines.add("Human: " + human.statusLine());
+        }
+
+        dev.basehunt.bhclient.modules.BehaviorMonitor monitor =
+            Modules.get().get(dev.basehunt.bhclient.modules.BehaviorMonitor.class);
+        if (showHuman.get() && monitor != null && monitor.isActive()) {
+            String humanLine = monitor.statusLine();
+            if (!humanLine.equals("measuring")) lines.add("Human-like: " + humanLine);
         }
 
         if (showAutomation.get()) {

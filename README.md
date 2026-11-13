@@ -62,7 +62,7 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `baritone-anarchy-expansion-2.8.0.jar` into `mods`.
+4. Drop `baritone-anarchy-expansion-2.9.0.jar` into `mods`.
 5. Launch the game and look for the **Baritone Anarchy Expansion** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
@@ -174,12 +174,16 @@ All under the **Baritone Anarchy Expansion** category in Meteor's module list.
 | `baritone-control` | off | Runs Baritone jobs (mine, follow, explore, goto, farm, build, tunnel) and reports them |
 | `death-recovery` | off | Records where you died and what you carried, and can fly you back to recover it |
 | `player-radar` | off | Tracks nearby players and warns when one is approaching |
+| `smooth-look` | off | Turns the camera smoothly toward a target instead of snapping to it |
+| `human-behavior` | off | Idles with the small, irregular movements of a real player |
+| `behavior-monitor` | off | Scores how human the recent movement and camera look |
 
 There is also a **Baritone Anarchy Expansion** HUD element with individual toggles for server, position, dimension,
 flight state, new-chunk/stash/player counts, autopilot target and distance, elytra durability, mending
 status, fireworks, free slots, survival warning, exploration progress, control ownership, the active
-automation task, the kit status, the running Baritone job, the nearest player and the nearest
-un-recovered death, and the 6b6t lines (server TPS, hotspot, homes and player count).
+automation task, the kit status, the running Baritone job, the nearest player, the nearest
+un-recovered death, the look target and the human-likeness score, and the 6b6t lines (server TPS, hotspot,
+homes and player count).
 
 ## Configuration notes
 
@@ -334,8 +338,9 @@ line and its controls. The terminal exposes the same tools as `sixbt status|home
 
 ## Anarchy toolkit
 
-Three modules cover the parts of an anarchy session that are not base hunting: gathering and travel
-through Baritone, surviving a death with your loot, and knowing when someone is closing in.
+Modules that cover the parts of an anarchy session that are not base hunting: gathering and travel
+through Baritone, surviving a death with your loot, knowing when someone is closing in, and — just as
+important — *moving like a person* so an automated client does not stand out.
 
 ### Baritone jobs — `baritone-control`
 
@@ -388,6 +393,38 @@ tracks every nearby player's distance and reports when one enters your range, wh
 `PLAYER_LEFT_RANGE` onto the automation bus. It only observes — it never attacks anyone.
 `/bh radar` and the terminal's `radar` list the live contacts, nearest first.
 
+### Realistic movement — `smooth-look`, `human-behavior`, `behavior-monitor`
+
+A client that snaps its camera to a target and then stands perfectly still is the easiest bot to spot. These
+three modules make the movement read as human, and then measure whether it does.
+
+**`smooth-look`** turns the camera the way a wrist turns a mouse. `LookSmoother` approaches a target along
+the shortest arc at a bounded per-tick speed, eases in, and settles with a small seeded jitter that fades as
+the aim arrives. Yaw takes the short way across the ±180° seam (170° → −170° is 20°, not 340°) and pitch is
+clamped to ±90°. It holds the `ROTATION` control lease while turning, so it never fights another module for
+the camera.
+
+| Command | What it does |
+| --- | --- |
+| `/bh look player Steve` | Turn smoothly toward a nearby player |
+| `/bh look at 100 70 -200` | Turn smoothly toward a block position |
+| `/bh look yaw 90 -20` | Turn smoothly to a raw yaw/pitch |
+| `/bh look clear` | Abandon the current look target |
+| `/bh look status` | Show the current look target |
+
+**`human-behavior`** adds the small, purposeless movement a person makes while idle: a glance, a tiny
+strafe, a jump, a brief sneak, a look down at the hotbar — each short and bounded, separated by random
+pauses, never twice the same gesture in a row. It refuses to gesture while another automation owns movement
+and takes the lowest priority, so it can never preempt anything that matters. It presses the same keys a
+player would and forges no packets.
+
+**`behavior-monitor`** closes the loop. `BehaviorProfiler` watches a rolling window of yaw and position
+samples and reduces it to how much the turn rate varies, how often you pause, and how straight the path is,
+combined into a 0–100 human-likeness score. A flat 0 ("this looks like a bot") is visible on the HUD and in
+`/bh human profile` instead of being taken on faith. It is read-only.
+
+The terminal exposes `look status|player|at|yaw|clear` and `human status|on|off|profile`.
+
 ## Storage and inventory
 
 Six modules share one safe pipeline. Every storage action is planned by pure logic, queued to a single
@@ -439,7 +476,7 @@ See [CHANGELOG.md](CHANGELOG.md). The current release is **2.5.0** — the 6b6t 
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.8.0.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.9.0.jar
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```

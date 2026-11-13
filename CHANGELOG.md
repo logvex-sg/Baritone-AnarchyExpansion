@@ -3,6 +3,44 @@
 All notable changes to the Baritone Anarchy Expansion. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] — 2026-11-13
+
+The realistic-player release. A bot that snaps its camera and stands perfectly still is easy to spot, so
+this release makes the client *move* the way a person does: the camera eases toward a target instead of
+jumping to it, the player makes small idle gestures, and a profiler scores how human the result actually
+looks. Each piece is a pure, headlessly tested core, so the suite grows from 939 to 997 assertions and
+`./gradlew build` is green (21 + 196 + 131 + 147 + 86 + 181 + 21 + 41 + 57 + 58 + 58).
+
+### Added — smooth look (`smooth-look`)
+
+- **The camera turns like a wrist, not a switch.** `LookSmoother` approaches a target along the shortest
+  arc at a bounded per-tick speed, eases in, and settles with a small seeded jitter that fades as the aim
+  arrives — so an aim request looks like a hand moving a mouse, not a coordinate being written.
+- **Correct angle maths.** Yaw takes the short way across the ±180° seam (170° → −170° is 20°, not 340°),
+  pitch is clamped to ±90°, and `yawTo` / `pitchTo` derive the aim from a world position in any quadrant.
+- **Arrival, not overshoot.** The smoother reports when it is within a tolerance of the target and can
+  release the camera; `face-player` keeps a continuous, smoothly-tracking aim on the nearest player.
+- **`/bh look …` and the terminal `look …`** aim at a player, a coordinate or a raw yaw/pitch, or clear
+  the target. It holds the `ROTATION` lease while turning, so it never fights another module for the camera.
+
+### Added — human behavior (`human-behavior`)
+
+- **Idle gestures a person would make.** `HumanBehavior` schedules short, bounded gestures — a glance, a
+  tiny strafe, a jump, a brief sneak, a look down at the hotbar — separated by random pauses, never twice
+  the same gesture in a row, so an idle client does not read as a statue.
+- **Deliberately timid.** Every duration is bounded, the module refuses to gesture while another automation
+  owns movement, and it takes the lowest priority so it can never preempt anything that matters. It presses
+  the same keys a player would and forges no packets.
+- **`/bh human on|off|status`** and the terminal `human …` toggle and inspect it.
+
+### Added — behavior monitor (`behavior-monitor`)
+
+- **A score, not a hope.** `BehaviorProfiler` watches a rolling window of yaw and position samples and
+  reduces it to how much the turn rate varies, how often the player pauses, and how straight the path is,
+  combined into a 0-100 human-likeness score. A flat 0 ("this looks like a bot") is visible on the HUD and
+  in `/bh human profile` instead of being taken on faith.
+- Read-only: it never writes the camera or the player, so it runs alongside anything.
+
 ## [2.8.0] — 2026-11-13
 
 The anarchy-toolkit release. Three modules fill the gaps around base hunting: Baritone jobs (mine, follow,

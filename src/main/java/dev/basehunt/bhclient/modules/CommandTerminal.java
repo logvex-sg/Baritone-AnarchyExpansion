@@ -284,6 +284,25 @@ public class CommandTerminal extends Module {
             .sub("list", ChatPermissions.Level.READ_ONLY)
             .build(), this::radar);
 
+        registry.register(TerminalCommand.builder("look", "look [status|player <name>|at <x> <y> <z>|yaw <deg> <pitch>|clear]",
+            "turn the camera smoothly toward a target instead of snapping to it",
+            ChatPermissions.Level.MOVEMENT)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("clear", ChatPermissions.Level.READ_ONLY)
+            .sub("player", ChatPermissions.Level.MOVEMENT)
+            .sub("at", ChatPermissions.Level.MOVEMENT)
+            .sub("yaw", ChatPermissions.Level.MOVEMENT)
+            .build(), this::look);
+
+        registry.register(TerminalCommand.builder("human", "human [status|on|off|profile]",
+            "idle with the small, irregular movements of a real player",
+            ChatPermissions.Level.MOVEMENT)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("on", ChatPermissions.Level.MOVEMENT)
+            .sub("off", ChatPermissions.Level.MOVEMENT)
+            .sub("profile", ChatPermissions.Level.READ_ONLY)
+            .build(), this::human);
+
         registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>|whitelist ...]",
             "claim kits, or run the 6b6t kit-maker delivery role", ChatPermissions.Level.READ_ONLY)
             .aliases("kits")
@@ -753,6 +772,105 @@ public class CommandTerminal extends Module {
         }
         if (!radar.isActive()) radar.enable();
         for (String line : radar.describe()) context.info("%s", line);
+    }
+
+    private void look(TerminalContext context) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            context.error("the smooth-look module is not loaded");
+            return;
+        }
+
+        if (context.argCount() == 0 || context.arg(0).equals("status")) {
+            if (!look.isActive()) look.enable();
+            context.info("smooth look: %s", look.statusLine());
+            return;
+        }
+
+        String sub = context.arg(0);
+        switch (sub) {
+            case "clear" -> {
+                look.clearTarget();
+                context.info("look target cleared");
+            }
+            case "player" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: look player <name>");
+                    return;
+                }
+                if (!look.isActive()) look.enable();
+                String name = context.arg(1);
+                var target = findPlayer(name);
+                if (target == null) {
+                    context.error("no player named %s is in view", name);
+                    return;
+                }
+                look.lookAt(target.getX(), target.getEyeY(), target.getZ());
+                context.info("turning smoothly toward %s", name);
+            }
+            case "at" -> {
+                if (context.argCount() < 4) {
+                    context.error("usage: look at <x> <y> <z>");
+                    return;
+                }
+                if (!look.isActive()) look.enable();
+                look.lookAt(context.intArg(1, 0), context.intArg(2, 0), context.intArg(3, 0));
+                context.info("turning smoothly toward %s %s %s", context.arg(1), context.arg(2), context.arg(3));
+            }
+            case "yaw" -> {
+                if (context.argCount() < 3) {
+                    context.error("usage: look yaw <degrees> <pitch>");
+                    return;
+                }
+                if (!look.isActive()) look.enable();
+                look.look(context.intArg(1, 0), context.intArg(2, 0));
+                context.info("turning smoothly to yaw %s pitch %s", context.arg(1), context.arg(2));
+            }
+            default -> context.error("usage: look [status|player <name>|at <x> <y> <z>|yaw <deg> <pitch>|clear]");
+        }
+    }
+
+    private void human(TerminalContext context) {
+        HumanBehaviorModule human = Modules.get().get(HumanBehaviorModule.class);
+        if (human == null) {
+            context.error("the human-behavior module is not loaded");
+            return;
+        }
+
+        if (context.argCount() == 0 || context.arg(0).equals("status")) {
+            context.info("human behavior: %s (%s, %d gestures)", human.isActive() ? "on" : "off",
+                human.statusLine(), human.gestures());
+            return;
+        }
+
+        switch (context.arg(0)) {
+            case "on" -> {
+                if (!human.isActive()) human.enable();
+                context.info("human behavior enabled");
+            }
+            case "off" -> {
+                if (human.isActive()) human.disable();
+                context.info("human behavior disabled");
+            }
+            case "profile" -> {
+                BehaviorMonitor monitor = Modules.get().get(BehaviorMonitor.class);
+                if (monitor == null) {
+                    context.error("the behavior monitor module is not loaded");
+                    return;
+                }
+                if (!monitor.isActive()) monitor.enable();
+                context.info("human-likeness: %s", monitor.describe());
+            }
+            default -> context.error("usage: human [status|on|off|profile]");
+        }
+    }
+
+    private net.minecraft.entity.player.PlayerEntity findPlayer(String name) {
+        if (mc.player == null || mc.world == null) return null;
+        for (var player : mc.world.getPlayers()) {
+            if (player.getGameProfile().name().equalsIgnoreCase(name)) return player;
+        }
+        return null;
     }
 
     private void kit(TerminalContext context) {

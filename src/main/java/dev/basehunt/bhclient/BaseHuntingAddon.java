@@ -13,7 +13,10 @@ import dev.basehunt.bhclient.modules.BaritoneControl;
 import dev.basehunt.bhclient.modules.ChatCommands;
 import dev.basehunt.bhclient.modules.CommandTerminal;
 import dev.basehunt.bhclient.modules.DeathRecovery;
+import dev.basehunt.bhclient.modules.BehaviorMonitor;
+import dev.basehunt.bhclient.modules.HumanBehaviorModule;
 import dev.basehunt.bhclient.modules.PlayerRadar;
+import dev.basehunt.bhclient.modules.SmoothLook;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -110,6 +113,9 @@ public class BaseHuntingAddon extends MeteorAddon {
         Modules.get().add(new BaritoneControl());
         Modules.get().add(new PlayerRadar());
         Modules.get().add(new DeathRecovery());
+        Modules.get().add(new SmoothLook());
+        Modules.get().add(new HumanBehaviorModule());
+        Modules.get().add(new BehaviorMonitor());
 
         Commands.add(new BaseHuntCommand());
 

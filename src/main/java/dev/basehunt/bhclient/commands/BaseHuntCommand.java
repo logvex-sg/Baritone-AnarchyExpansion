@@ -16,7 +16,10 @@ import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.ChatCommands;
 import dev.basehunt.bhclient.modules.CommandTerminal;
 import dev.basehunt.bhclient.modules.DeathRecovery;
+import dev.basehunt.bhclient.modules.BehaviorMonitor;
+import dev.basehunt.bhclient.modules.HumanBehaviorModule;
 import dev.basehunt.bhclient.modules.PlayerRadar;
+import dev.basehunt.bhclient.modules.SmoothLook;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -131,6 +134,8 @@ public class BaseHuntCommand extends Command {
         buildJob(builder);
         buildDeath(builder);
         buildRadar(builder);
+        buildLook(builder);
+        buildHuman(builder);
         buildStash(builder);
         buildPlayer(builder);
         buildElytra(builder);
@@ -495,6 +500,166 @@ public class BaseHuntCommand extends Command {
         if (!radar.isActive()) radar.enable();
         info("Nearby players");
         for (String line : radar.describe()) info("  %s", line);
+    }
+
+    /**
+     * {@code /bh look ...} - the smooth-look camera. The {@link SmoothLook} module eases the view toward a
+     * target instead of snapping to it; these commands set a target and report the state.
+     */
+    private void buildLook(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("look")
+            .executes(context -> {
+                lookStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                lookStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("player")
+                .then(argument("name", StringArgumentType.word()).executes(context -> {
+                    lookPlayer(StringArgumentType.getString(context, "name"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("at")
+                .then(argument("x", integer())
+                    .then(argument("y", integer())
+                        .then(argument("z", integer()).executes(context -> {
+                            lookAt(getInteger(context, "x"), getInteger(context, "y"),
+                                getInteger(context, "z"));
+                            return SINGLE_SUCCESS;
+                        }))
+                    )
+                )
+            )
+            .then(literal("yaw")
+                .then(argument("degrees", integer(-180, 180))
+                    .then(argument("pitch", integer(-90, 90)).executes(context -> {
+                        look(getInteger(context, "degrees"), getInteger(context, "pitch"));
+                        return SINGLE_SUCCESS;
+                    }))
+                )
+            )
+            .then(literal("clear").executes(context -> {
+                SmoothLook look = Modules.get().get(SmoothLook.class);
+                if (look != null) look.clearTarget();
+                info("Look target cleared.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void lookStatus() {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+        info("Smooth look: %s", look.statusLine());
+    }
+
+    private void lookPlayer(String name) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+
+        if (mc.player == null || mc.world == null) return;
+
+        for (var player : mc.world.getPlayers()) {
+            if (player.getGameProfile().name().equalsIgnoreCase(name)) {
+                look.lookAt(player.getX(), player.getEyeY(), player.getZ());
+                info("Turning smoothly toward %s.", name);
+                return;
+            }
+        }
+        error("No player named %s is in view.", name);
+    }
+
+    private void lookAt(int x, int y, int z) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+        look.lookAt(x, y, z);
+        info("Turning smoothly toward %d %d %d.", x, y, z);
+    }
+
+    private void look(int yaw, int pitch) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+        look.look(yaw, pitch);
+        info("Turning smoothly to yaw %d pitch %d.", yaw, pitch);
+    }
+
+    /**
+     * {@code /bh human ...} - the human-behavior idle gestures. The {@link HumanBehaviorModule} makes the
+     * small movements a real player makes so an idling client does not look automated.
+     */
+    private void buildHuman(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("human")
+            .executes(context -> {
+                humanStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                humanStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("on").executes(context -> {
+                humanToggle(true);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("off").executes(context -> {
+                humanToggle(false);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("profile").executes(context -> {
+                humanProfile();
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void humanStatus() {
+        HumanBehaviorModule human = Modules.get().get(HumanBehaviorModule.class);
+        if (human == null) {
+            error("The human-behavior module is not loaded.");
+            return;
+        }
+        info("Human behavior: %s (%s, %d gestures)", human.isActive() ? "on" : "off",
+            human.statusLine(), human.gestures());
+    }
+
+    private void humanProfile() {
+        BehaviorMonitor monitor = Modules.get().get(BehaviorMonitor.class);
+        if (monitor == null) {
+            error("The behavior monitor module is not loaded.");
+            return;
+        }
+        if (!monitor.isActive()) monitor.enable();
+        info("Human-likeness: %s", monitor.describe());
+    }
+
+    private void humanToggle(boolean on) {
+        HumanBehaviorModule human = Modules.get().get(HumanBehaviorModule.class);
+        if (human == null) {
+            error("The human-behavior module is not loaded.");
+            return;
+        }
+        if (on && !human.isActive()) human.enable();
+        if (!on && human.isActive()) human.disable();
+        info("Human behavior %s.", on ? "enabled" : "disabled");
     }
 
     private void buildStash(LiteralArgumentBuilder<CommandSource> builder) {

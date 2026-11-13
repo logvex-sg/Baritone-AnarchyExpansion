@@ -9,13 +9,13 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.8.0.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.9.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs ten plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs eleven plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
@@ -52,6 +52,12 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
   eviction, nearest-death search scoped to server + dimension, recovered marking, id continuity across a
   rebuild) and `ProximityRadar` (the ENTERED/APPROACHING/RECEDING/STEADY/LEFT transitions, nearest-first
   ordering, expiry and the contact cap). 58 assertions, pure.
+- `smoothLookTest` — the realistic-movement suite: `LookSmoother` (angle wrapping and the shortest-arc
+  seam turn, the yaw/pitch aim geometry, the eased and speed-capped approach, seeded jitter, arrival and
+  the clamped settings), `HumanBehavior` (the idle schedule, gesture durations and bounds, the anti-repeat
+  rule and the jump/sneak toggles) and `BehaviorProfiler` (turn-rate variance, pause ratio, path
+  straightness, the bounded window and the human-likeness score that separates a mechanical bot from an
+  irregular human). 58 assertions, pure.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
@@ -120,7 +126,10 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              ItemFilter, QuantityPlanner, ProtectionGuard,
 │   │                              BaritoneTaskCatalog (parses/validates a Baritone job request),
 │   │                              DeathMemory (bounded death records + nearest-death search),
-│   │                              ProximityRadar (contact list + ENTERED/APPROACHING/LEFT transitions)
+│   │                              ProximityRadar (contact list + ENTERED/APPROACHING/LEFT transitions),
+│   │                              LookSmoother (eased, jittered camera aim with arc wrapping + arrival),
+│   │                              HumanBehavior (seeded idle-gesture scheduler, anti-repeat, bounded),
+│   │                              BehaviorProfiler (rolling window -> 0-100 human-likeness score)
 │   ├── task/                      the automation work queue:
 │   │                              Task (name/category/priority/progress/attempts/state),
 │   │                              TaskQueue (one runner at a time, dedupe, retry, cancel),
@@ -156,7 +165,9 @@ src/main/java/dev/basehunt/bhclient/
 │                                SixbtHomeManager, SixbtTpaManager, SixbtTpsMonitor,
 │                                SixbtHotspotTracker, SixbtPlayerTracker (the 6b6t modules),
 │                                BaritoneControl (runs Baritone jobs + reports completion),
-│                                DeathRecovery (records deaths + flies back), PlayerRadar (proximity)
+│                                DeathRecovery (records deaths + flies back), PlayerRadar (proximity),
+│                                SmoothLook (eased camera aiming), HumanBehaviorModule (idle gestures),
+│                                BehaviorMonitor (scores how human the movement looks)
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
 │                                StorageRegistry, WorkflowManager, KitBotStore, KitLoadoutStore,
 │                                KitChestSource (sources a kit from inventory + nearby containers),

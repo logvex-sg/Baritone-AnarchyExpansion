@@ -125,6 +125,10 @@ public record AutomationEvent(Type type, String source, long timestamp, Map<Stri
         DEATH_RECOVERED,
         DEATH_RECOVERY_FAILED,
 
+        // Smooth look and human-like behaviour
+        LOOK_COMPLETED,
+        HUMAN_GESTURE,
+
         // System
         SYSTEM_ERROR,
         MILESTONE
