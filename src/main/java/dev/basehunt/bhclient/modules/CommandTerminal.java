@@ -13,6 +13,7 @@ import dev.basehunt.bhclient.core.terminal.MacroStore;
 import dev.basehunt.bhclient.core.terminal.TerminalBuffer;
 import dev.basehunt.bhclient.core.terminal.TerminalCommand;
 import dev.basehunt.bhclient.core.terminal.TerminalContext;
+import dev.basehunt.bhclient.core.logic.ObjectivePlanner;
 import dev.basehunt.bhclient.gui.BaseHuntingScreen;
 import dev.basehunt.bhclient.modules.SixbtHomeManager;
 import dev.basehunt.bhclient.modules.SixbtHotspotTracker;
@@ -21,6 +22,7 @@ import dev.basehunt.bhclient.modules.SixbtTpaManager;
 import dev.basehunt.bhclient.modules.SixbtTpsMonitor;
 import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.systems.DatabaseIO;
+import dev.basehunt.bhclient.systems.DeathStore;
 import dev.basehunt.bhclient.systems.EnderChestStore;
 import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.NavigationManager;
@@ -245,6 +247,81 @@ public class CommandTerminal extends Module {
             .sub("status", ChatPermissions.Level.READ_ONLY)
             .sub("stop", ChatPermissions.Level.MOVEMENT)
             .build(), this::baritone);
+
+        registry.register(TerminalCommand.builder("job", "job [status|stop|mine <block> [qty]|goto <x> <y> <z>|follow <player>|explore [x z]|farm [range]|tunnel|build <file> <x> <y> <z>|run <line>]",
+            "run and inspect Baritone jobs (mine, follow, explore, goto, farm, build, tunnel)",
+            ChatPermissions.Level.READ_ONLY)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("stop", ChatPermissions.Level.MOVEMENT)
+            .sub("mine", ChatPermissions.Level.MOVEMENT)
+            .sub("goto", ChatPermissions.Level.MOVEMENT)
+            .sub("follow", ChatPermissions.Level.MOVEMENT)
+            .sub("explore", ChatPermissions.Level.MOVEMENT)
+            .sub("farm", ChatPermissions.Level.MOVEMENT)
+            .sub("tunnel", ChatPermissions.Level.MOVEMENT)
+            .sub("build", ChatPermissions.Level.MOVEMENT)
+            .sub("run", ChatPermissions.Level.MOVEMENT)
+            .completions(index -> index == 0
+                ? List.of("status", "stop", "mine", "goto", "follow", "explore", "farm", "tunnel", "build", "run")
+                : List.of())
+            .build(), this::job);
+
+        registry.register(TerminalCommand.builder("death", "death [list|near|recover|recover-id <id>|clear]",
+            "inspect the recorded deaths and fly back to recover one", ChatPermissions.Level.READ_ONLY)
+            .aliases("deaths")
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .sub("near", ChatPermissions.Level.READ_ONLY)
+            .sub("recover", ChatPermissions.Level.MOVEMENT)
+            .sub("recover-id", ChatPermissions.Level.MOVEMENT)
+            .sub("clear", ChatPermissions.Level.CONTROL, true)
+            .completions(index -> index == 0
+                ? List.of("list", "near", "recover", "recover-id", "clear") : List.of())
+            .build(), this::death);
+
+        registry.register(TerminalCommand.builder("radar", "radar [status|list]",
+            "list the players currently near you", ChatPermissions.Level.READ_ONLY)
+            .aliases("nearby")
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .build(), this::radar);
+
+        registry.register(TerminalCommand.builder("look", "look [status|player <name>|at <x> <y> <z>|yaw <deg> <pitch>|clear]",
+            "turn the camera smoothly toward a target instead of snapping to it",
+            ChatPermissions.Level.MOVEMENT)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("clear", ChatPermissions.Level.READ_ONLY)
+            .sub("player", ChatPermissions.Level.MOVEMENT)
+            .sub("at", ChatPermissions.Level.MOVEMENT)
+            .sub("yaw", ChatPermissions.Level.MOVEMENT)
+            .build(), this::look);
+
+        registry.register(TerminalCommand.builder("human", "human [status|on|off|profile]",
+            "idle with the small, irregular movements of a real player",
+            ChatPermissions.Level.MOVEMENT)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("on", ChatPermissions.Level.MOVEMENT)
+            .sub("off", ChatPermissions.Level.MOVEMENT)
+            .sub("profile", ChatPermissions.Level.READ_ONLY)
+            .build(), this::human);
+
+        registry.register(TerminalCommand.builder("threat", "threat [status|list|retreat]",
+            "read the scored threats nearby and arm the panic retreat",
+            ChatPermissions.Level.MOVEMENT)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .sub("retreat", ChatPermissions.Level.MOVEMENT)
+            .build(), this::threat);
+
+        registry.register(TerminalCommand.builder("objective",
+            "objective [list|next|done <id>|add <label>|clear]",
+            "work the ranked anarchy to-do list",
+            ChatPermissions.Level.READ_ONLY)
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .sub("next", ChatPermissions.Level.MOVEMENT)
+            .sub("done", ChatPermissions.Level.CONTROL)
+            .sub("add", ChatPermissions.Level.CONTROL)
+            .sub("clear", ChatPermissions.Level.CONTROL)
+            .build(), this::objective);
 
         registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>|whitelist ...]",
             "claim kits, or run the 6b6t kit-maker delivery role", ChatPermissions.Level.READ_ONLY)
@@ -630,6 +707,273 @@ public class CommandTerminal extends Module {
             }
             default -> context.error("usage: baritone [status|stop]");
         }
+    }
+
+    private void job(TerminalContext context) {
+        BaritoneControl control = Modules.get().get(BaritoneControl.class);
+        if (control == null) {
+            context.error("the Baritone control module is not loaded");
+            return;
+        }
+
+        String sub = context.arg(0).toLowerCase(Locale.ROOT);
+        switch (sub.isEmpty() ? "status" : sub) {
+            case "status" -> {
+                for (String line : control.describe()) context.info("%s", line);
+            }
+            case "stop" -> {
+                control.cancel();
+                context.info("Baritone job cancelled.");
+            }
+            case "mine", "goto", "follow", "explore", "farm", "tunnel", "build" -> {
+                if (!control.isActive()) control.enable();
+                context.info("%s", control.run(context.joinFrom(0)));
+            }
+            case "run" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: job run <line>");
+                    return;
+                }
+                if (!control.isActive()) control.enable();
+                context.info("%s", control.run(context.joinFrom(1)));
+            }
+            default -> context.error("usage: job [status|stop|mine <block> [qty]|goto <x> <y> <z>|follow <player>|explore [x z]|farm [range]|tunnel|build <file> <x> <y> <z>|run <line>]");
+        }
+    }
+
+    private void death(TerminalContext context) {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            context.error("the death recovery module is not loaded");
+            return;
+        }
+
+        String sub = context.arg(0).toLowerCase(Locale.ROOT);
+        switch (sub.isEmpty() ? "list" : sub) {
+            case "list" -> {
+                for (String line : recovery.describe()) context.info("%s", line);
+            }
+            case "near" -> context.info("%s", recovery.statusLine());
+            case "recover" -> {
+                if (!recovery.isActive()) recovery.enable();
+                context.info("%s", recovery.recoverNearest());
+            }
+            case "recover-id" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: death recover-id <id>");
+                    return;
+                }
+                int id = context.intArg(1, -1);
+                if (id < 0) {
+                    context.error("id must be a whole number");
+                    return;
+                }
+                if (!recovery.isActive()) recovery.enable();
+                context.info("%s", recovery.recoverById(id));
+            }
+            case "clear" -> {
+                DeathStore store = DeathStore.get();
+                if (store == null) {
+                    context.error("the death store is not loaded");
+                    return;
+                }
+                int removed = store.removeWhere(record -> true);
+                context.info("Cleared %d death record(s).", removed);
+            }
+            default -> context.error("usage: death [list|near|recover|recover-id <id>|clear]");
+        }
+    }
+
+    private void radar(TerminalContext context) {
+        PlayerRadar radar = Modules.get().get(PlayerRadar.class);
+        if (radar == null) {
+            context.error("the player radar module is not loaded");
+            return;
+        }
+        if (!radar.isActive()) radar.enable();
+        for (String line : radar.describe()) context.info("%s", line);
+    }
+
+    private void look(TerminalContext context) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            context.error("the smooth-look module is not loaded");
+            return;
+        }
+
+        if (context.argCount() == 0 || context.arg(0).equals("status")) {
+            if (!look.isActive()) look.enable();
+            context.info("smooth look: %s", look.statusLine());
+            return;
+        }
+
+        String sub = context.arg(0);
+        switch (sub) {
+            case "clear" -> {
+                look.clearTarget();
+                context.info("look target cleared");
+            }
+            case "player" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: look player <name>");
+                    return;
+                }
+                if (!look.isActive()) look.enable();
+                String name = context.arg(1);
+                var target = findPlayer(name);
+                if (target == null) {
+                    context.error("no player named %s is in view", name);
+                    return;
+                }
+                look.lookAt(target.getX(), target.getEyeY(), target.getZ());
+                context.info("turning smoothly toward %s", name);
+            }
+            case "at" -> {
+                if (context.argCount() < 4) {
+                    context.error("usage: look at <x> <y> <z>");
+                    return;
+                }
+                if (!look.isActive()) look.enable();
+                look.lookAt(context.intArg(1, 0), context.intArg(2, 0), context.intArg(3, 0));
+                context.info("turning smoothly toward %s %s %s", context.arg(1), context.arg(2), context.arg(3));
+            }
+            case "yaw" -> {
+                if (context.argCount() < 3) {
+                    context.error("usage: look yaw <degrees> <pitch>");
+                    return;
+                }
+                if (!look.isActive()) look.enable();
+                look.look(context.intArg(1, 0), context.intArg(2, 0));
+                context.info("turning smoothly to yaw %s pitch %s", context.arg(1), context.arg(2));
+            }
+            default -> context.error("usage: look [status|player <name>|at <x> <y> <z>|yaw <deg> <pitch>|clear]");
+        }
+    }
+
+    private void human(TerminalContext context) {
+        HumanBehaviorModule human = Modules.get().get(HumanBehaviorModule.class);
+        if (human == null) {
+            context.error("the human-behavior module is not loaded");
+            return;
+        }
+
+        if (context.argCount() == 0 || context.arg(0).equals("status")) {
+            context.info("human behavior: %s (%s, %d gestures)", human.isActive() ? "on" : "off",
+                human.statusLine(), human.gestures());
+            return;
+        }
+
+        switch (context.arg(0)) {
+            case "on" -> {
+                if (!human.isActive()) human.enable();
+                context.info("human behavior enabled");
+            }
+            case "off" -> {
+                if (human.isActive()) human.disable();
+                context.info("human behavior disabled");
+            }
+            case "profile" -> {
+                BehaviorMonitor monitor = Modules.get().get(BehaviorMonitor.class);
+                if (monitor == null) {
+                    context.error("the behavior monitor module is not loaded");
+                    return;
+                }
+                if (!monitor.isActive()) monitor.enable();
+                context.info("human-likeness: %s", monitor.describe());
+            }
+            default -> context.error("usage: human [status|on|off|profile]");
+        }
+    }
+
+    private void threat(TerminalContext context) {
+        ThreatMonitor monitor = Modules.get().get(ThreatMonitor.class);
+        if (monitor == null) {
+            context.error("the threat-monitor module is not loaded");
+            return;
+        }
+
+        if (context.argCount() == 0 || context.arg(0).equals("status") || context.arg(0).equals("list")) {
+            if (!monitor.isActive()) monitor.enable();
+            context.info("threat level: %s", monitor.worstLevel().name().toLowerCase());
+            for (String line : monitor.describe()) context.info("  %s", line);
+            return;
+        }
+
+        switch (context.arg(0)) {
+            case "retreat" -> {
+                PanicRetreat retreat = Modules.get().get(PanicRetreat.class);
+                if (retreat == null) {
+                    context.error("the panic-retreat module is not loaded");
+                    return;
+                }
+                if (!retreat.isActive()) retreat.enable();
+                context.info("panic retreat armed (%s)", retreat.statusLine());
+            }
+            default -> context.error("usage: threat [status|list|retreat]");
+        }
+    }
+
+    private void objective(TerminalContext context) {
+        ObjectiveQueue queue = Modules.get().get(ObjectiveQueue.class);
+        var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+        if (queue == null || store == null) {
+            context.error("the objective queue is not loaded");
+            return;
+        }
+
+        String sub = context.arg(0).toLowerCase(Locale.ROOT);
+        switch (sub.isEmpty() ? "list" : sub) {
+            case "list", "status" -> {
+                if (!queue.isActive()) queue.enable();
+                for (String line : queue.describe()) context.info("%s", line);
+            }
+            case "next", "goto" -> {
+                if (!queue.isActive()) queue.enable();
+                context.info("%s", queue.travelToNext());
+            }
+            case "done" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: objective done <id>");
+                    return;
+                }
+                long id;
+                try {
+                    id = Long.parseLong(context.arg(1));
+                } catch (NumberFormatException e) {
+                    context.error("objective id must be a number");
+                    return;
+                }
+                context.info(store.complete(id)
+                    ? "objective #%d completed".formatted(id)
+                    : "no objective #%d".formatted(id));
+            }
+            case "add" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: objective add <label>");
+                    return;
+                }
+                if (mc.player == null) return;
+                String label = String.join(" ", context.args().subList(1, context.argCount()));
+                var objective = store.add(ObjectivePlanner.Kind.CUSTOM, label,
+                    (int) Math.floor(mc.player.getX()), (int) Math.floor(mc.player.getY()),
+                    (int) Math.floor(mc.player.getZ()), 16);
+                context.info("queued objective #%d: %s at %s", objective.id(), objective.label(),
+                    objective.coords());
+            }
+            case "clear" -> {
+                store.clearAll();
+                context.info("objective list cleared");
+            }
+            default -> context.error("usage: objective [list|next|done <id>|add <label>|clear]");
+        }
+    }
+
+    private net.minecraft.entity.player.PlayerEntity findPlayer(String name) {
+        if (mc.player == null || mc.world == null) return null;
+        for (var player : mc.world.getPlayers()) {
+            if (player.getGameProfile().name().equalsIgnoreCase(name)) return player;
+        }
+        return null;
     }
 
     private void kit(TerminalContext context) {

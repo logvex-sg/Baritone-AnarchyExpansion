@@ -9,8 +9,17 @@ import dev.basehunt.bhclient.modules.BaseHunter;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.AutoStorage;
 import dev.basehunt.bhclient.modules.AutomationBrain;
+import dev.basehunt.bhclient.modules.BaritoneControl;
 import dev.basehunt.bhclient.modules.ChatCommands;
 import dev.basehunt.bhclient.modules.CommandTerminal;
+import dev.basehunt.bhclient.modules.DeathRecovery;
+import dev.basehunt.bhclient.modules.BehaviorMonitor;
+import dev.basehunt.bhclient.modules.HumanBehaviorModule;
+import dev.basehunt.bhclient.modules.PlayerRadar;
+import dev.basehunt.bhclient.modules.SmoothLook;
+import dev.basehunt.bhclient.modules.ThreatMonitor;
+import dev.basehunt.bhclient.modules.PanicRetreat;
+import dev.basehunt.bhclient.modules.ObjectiveQueue;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -32,6 +41,8 @@ import dev.basehunt.bhclient.modules.SurvivalManager;
 import dev.basehunt.bhclient.modules.WebhookNotifier;
 import dev.basehunt.bhclient.systems.ContainerInteractionManager;
 import dev.basehunt.bhclient.systems.AutomationEngine;
+import dev.basehunt.bhclient.systems.DeathStore;
+import dev.basehunt.bhclient.systems.ObjectiveStore;
 import dev.basehunt.bhclient.systems.EnderChestStore;
 import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.KitBotStore;
@@ -75,6 +86,8 @@ public class BaseHuntingAddon extends MeteorAddon {
         Systems.add(new KitLoadoutStore());
         Systems.add(new SixbtServerStore());
         Systems.add(new SixbtPlayerStore());
+        Systems.add(new DeathStore());
+        Systems.add(new ObjectiveStore());
 
         Modules.get().add(new BaseHunter());
         Modules.get().add(new BaseHunterV2());
@@ -102,6 +115,15 @@ public class BaseHuntingAddon extends MeteorAddon {
         Modules.get().add(new CommandTerminal());
         Modules.get().add(new AutoStorage());
         Modules.get().add(new AutomationBrain());
+        Modules.get().add(new BaritoneControl());
+        Modules.get().add(new PlayerRadar());
+        Modules.get().add(new DeathRecovery());
+        Modules.get().add(new SmoothLook());
+        Modules.get().add(new HumanBehaviorModule());
+        Modules.get().add(new BehaviorMonitor());
+        Modules.get().add(new ThreatMonitor());
+        Modules.get().add(new PanicRetreat());
+        Modules.get().add(new ObjectiveQueue());
 
         Commands.add(new BaseHuntCommand());
 

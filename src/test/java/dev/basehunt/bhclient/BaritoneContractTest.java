@@ -55,6 +55,12 @@ public class BaritoneContractTest {
             check("IBaritone.getElytraProcess present", containsUtf8(baritone, "getElytraProcess"), "missing");
             check("IBaritone.getCustomGoalProcess present", containsUtf8(baritone, "getCustomGoalProcess"), "missing");
             check("IBaritone.getCommandManager present", containsUtf8(baritone, "getCommandManager"), "missing");
+            for (String accessor : new String[] {
+                "getMineProcess", "getFollowProcess", "getGetToBlockProcess", "getExploreProcess",
+                "getFarmProcess", "getBuilderProcess", "getSelectionManager"
+            }) {
+                check("IBaritone." + accessor + " present", containsUtf8(baritone, accessor), "missing");
+            }
 
             System.out.println("== IPathingBehavior ==");
 
@@ -83,6 +89,42 @@ public class BaritoneContractTest {
 
             byte[] commands = read(zip, "baritone/api/command/manager/ICommandManager.class");
             check("ICommandManager.execute present", containsUtf8(commands, "execute"), "missing");
+
+            System.out.println("== Process interfaces the job toolkit drives ==");
+
+            check("IMineProcess present", has(zip, "baritone/api/process/IMineProcess.class"), "missing");
+            byte[] mine = read(zip, "baritone/api/process/IMineProcess.class");
+            check("IMineProcess.mineByName present", containsUtf8(mine, "mineByName"), "missing");
+
+            check("IFollowProcess present", has(zip, "baritone/api/process/IFollowProcess.class"), "missing");
+            byte[] follow = read(zip, "baritone/api/process/IFollowProcess.class");
+            for (String member : new String[] {"follow", "pickup", "following"}) {
+                check("IFollowProcess." + member + " present", containsUtf8(follow, member), "missing");
+            }
+
+            check("IGetToBlockProcess present", has(zip, "baritone/api/process/IGetToBlockProcess.class"), "missing");
+            byte[] getToBlock = read(zip, "baritone/api/process/IGetToBlockProcess.class");
+            check("IGetToBlockProcess.getToBlock present", containsUtf8(getToBlock, "getToBlock"), "missing");
+
+            check("IExploreProcess present", has(zip, "baritone/api/process/IExploreProcess.class"), "missing");
+            byte[] explore = read(zip, "baritone/api/process/IExploreProcess.class");
+            check("IExploreProcess.explore present", containsUtf8(explore, "explore"), "missing");
+
+            check("IFarmProcess present", has(zip, "baritone/api/process/IFarmProcess.class"), "missing");
+            byte[] farm = read(zip, "baritone/api/process/IFarmProcess.class");
+            check("IFarmProcess.farm present", containsUtf8(farm, "farm"), "missing");
+
+            check("IBuilderProcess present", has(zip, "baritone/api/process/IBuilderProcess.class"), "missing");
+            byte[] builder = read(zip, "baritone/api/process/IBuilderProcess.class");
+            for (String member : new String[] {"build", "pause", "resume", "isPaused"}) {
+                check("IBuilderProcess." + member + " present", containsUtf8(builder, member), "missing");
+            }
+
+            check("ISelectionManager present", has(zip, "baritone/api/selection/ISelectionManager.class"), "missing");
+            byte[] selection = read(zip, "baritone/api/selection/ISelectionManager.class");
+            check("ISelectionManager.getSelections present", containsUtf8(selection, "getSelections"), "missing");
+
+            check("BlockOptionalMeta present", has(zip, "baritone/api/utils/BlockOptionalMeta.class"), "missing");
 
             System.out.println("== Settings driven by Base Hunter v1 ==");
 

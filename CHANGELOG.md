@@ -3,6 +3,138 @@
 All notable changes to the Baritone Anarchy Expansion. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] — 2026-11-13
+
+The anarchy-survival release. Knowing a player is nearby is not the same as knowing you are in danger, and
+a stash run is more than the one errand it was started for. This release adds a threat score, a retreat that
+acts on it, and a ranked to-do list of the loot and bases worth coming back for. Each piece is a pure,
+headlessly tested core, so the suite grows from 997 to 1041 assertions and `./gradlew build` is green
+(21 + 196 + 131 + 147 + 86 + 181 + 21 + 41 + 57 + 58 + 58 + 44).
+
+### Added — threat assessment (`threat-monitor`)
+
+- **Distance is not danger.** `ThreatAssessment` scores each nearby player 0–100 from distance, how fast
+  they are closing, and what they are wearing and holding (armour, a weapon, a totem, an elytra), and sorts
+  them into calm, wary, danger and flee. A leather-clad stranger drifting past is calm; a totem-carrying,
+  netherite-wearing player closing at speed is flee.
+- **Monotonic and capped.** Closer is always worse, approaching is worse than still, a receding player is
+  no worse than a stationary one, and no single input can push the score past 100 — so a distant, harmless
+  player can never read as an emergency. Only danger and flee alarm, with a per-player cooldown.
+- **`/bh threat` and the terminal `threat status|list`** print the scored contacts worst-first; the HUD
+  shows the worst one.
+
+### Added — panic retreat (`panic-retreat`)
+
+- **Duck into cover instead of freezing.** On a danger or flee alarm the module samples the blocks around
+  the player and ranks them with `SafeSpotFinder` — cover, a roof overhead, darkness and nearby water score
+  well, while lava and fire are disqualifying and a long drop is penalised.
+- **Walks, does not teleport.** It sends the player to the best spot worth using via Baritone, holds the
+  `MOVEMENT` lease only while retreating, and gives up rather than looping when nothing is good enough.
+- **`/bh threat retreat`** arms it. It never attacks and never builds.
+
+### Added — objective queue (`objective-queue`)
+
+- **The errands you would otherwise forget.** The module watches for notable item drops you pass and the
+  last-seen spot of a tracked player who logged out, and queues them through `ObjectivePlanner`.
+- **Ranked and bounded.** Each objective is scored by worth, minus distance, minus a saturating staleness
+  cost, so a fresh, valuable objective near you beats a stale one across the map. Same-kind objectives
+  within a merge radius are merged, and the list is capped and de-duplicated.
+- **Persistent.** `ObjectiveStore` saves the queue per server, so it survives a restart; it is the twelfth
+  store in the database export/import path, and the section list is pinned by a headless test.
+- **`/bh objective [list|next|done <id>|add <label>|clear]`** and the terminal `objective …` read and work
+  the list. `next` sends the player to the best one via Baritone; the queue decides *what* is worth doing,
+  never *who* drives.
+
+## [2.9.0] — 2026-11-13
+
+The realistic-player release. A bot that snaps its camera and stands perfectly still is easy to spot, so
+this release makes the client *move* the way a person does: the camera eases toward a target instead of
+jumping to it, the player makes small idle gestures, and a profiler scores how human the result actually
+looks. Each piece is a pure, headlessly tested core, so the suite grows from 939 to 997 assertions and
+`./gradlew build` is green (21 + 196 + 131 + 147 + 86 + 181 + 21 + 41 + 57 + 58 + 58).
+
+### Added — smooth look (`smooth-look`)
+
+- **The camera turns like a wrist, not a switch.** `LookSmoother` approaches a target along the shortest
+  arc at a bounded per-tick speed, eases in, and settles with a small seeded jitter that fades as the aim
+  arrives — so an aim request looks like a hand moving a mouse, not a coordinate being written.
+- **Correct angle maths.** Yaw takes the short way across the ±180° seam (170° → −170° is 20°, not 340°),
+  pitch is clamped to ±90°, and `yawTo` / `pitchTo` derive the aim from a world position in any quadrant.
+- **Arrival, not overshoot.** The smoother reports when it is within a tolerance of the target and can
+  release the camera; `face-player` keeps a continuous, smoothly-tracking aim on the nearest player.
+- **`/bh look …` and the terminal `look …`** aim at a player, a coordinate or a raw yaw/pitch, or clear
+  the target. It holds the `ROTATION` lease while turning, so it never fights another module for the camera.
+
+### Added — human behavior (`human-behavior`)
+
+- **Idle gestures a person would make.** `HumanBehavior` schedules short, bounded gestures — a glance, a
+  tiny strafe, a jump, a brief sneak, a look down at the hotbar — separated by random pauses, never twice
+  the same gesture in a row, so an idle client does not read as a statue.
+- **Deliberately timid.** Every duration is bounded, the module refuses to gesture while another automation
+  owns movement, and it takes the lowest priority so it can never preempt anything that matters. It presses
+  the same keys a player would and forges no packets.
+- **`/bh human on|off|status`** and the terminal `human …` toggle and inspect it.
+
+### Added — behavior monitor (`behavior-monitor`)
+
+- **A score, not a hope.** `BehaviorProfiler` watches a rolling window of yaw and position samples and
+  reduces it to how much the turn rate varies, how often the player pauses, and how straight the path is,
+  combined into a 0-100 human-likeness score. A flat 0 ("this looks like a bot") is visible on the HUD and
+  in `/bh human profile` instead of being taken on faith.
+- Read-only: it never writes the camera or the player, so it runs alongside anything.
+
+## [2.8.0] — 2026-11-13
+
+The anarchy-toolkit release. Three modules fill the gaps around base hunting: Baritone jobs (mine, follow,
+explore, goto, farm, build, tunnel) with completion events, death memory with fly-back recovery, and a
+proximity radar that warns when a player is *approaching*, not merely present. Each is built on a pure,
+headlessly tested core, so the new suite grows from 832 to 939 assertions and `./gradlew build` is green
+(21 + 196 + 131 + 147 + 86 + 181 + 21 + 41 + 57 + 58).
+
+### Added — Baritone job toolkit (`baritone-control`)
+
+- **One place to run Baritone's own processes.** `mine`, `follow`, `explore`, `get-to-block`, `farm`,
+  `build` and `tunnel` are started, remembered and watched from a single module, so a job has a lifecycle
+  instead of being a fire-and-forget command.
+- **Strict parsing.** `BaritoneTaskCatalog` validates every request (verb, target, quantity, coordinates)
+  and refuses a malformed one with a reason, so a typo stops at the command line instead of being handed
+  to Baritone as a job that silently does nothing. Quantities are clamped, coordinates range-checked.
+- **Completion detection.** A job that stops moving for `idle-grace-ticks` without being cancelled is
+  reported as finished; a job Baritone drops is reported as failed. Each transition publishes
+  `BARITONE_TASK_STARTED` / `_DONE` / `_FAILED` / `_CANCELLED` on the automation bus.
+- **`/bh job …` and the terminal `job …`** expose every job, `stop`, and a raw `run <line>` passthrough.
+  `auto-pickup` walks over the drops while mining; `stop-on-death` cancels a job when you die.
+- `BaritoneHelper` grew typed wrappers for the process interfaces (mine-by-name, follow/pickup predicates,
+  explore, farm, build, selection) plus a `command(...)` that reports whether Baritone accepted a command.
+  `cancelAllProcesses()` stops every process, not just pathing.
+
+### Added — death recovery (`death-recovery`)
+
+- **A death is remembered, not forgotten.** `DeathMemory` records the position, dimension, timestamp and
+  approximate carried-item count, bounded so a long session cannot grow the list without limit.
+- **Per-server persistence.** `DeathStore` (a new `deaths` database section) keeps the list across a
+  restart, so a recovery run after a crash still has somewhere to go. A single corrupt record is skipped
+  rather than costing the rest of the list.
+- **Fly-back recovery.** `/bh death recover` (and `auto-recover` after respawn) navigates to the nearest
+  un-recovered death *in the current dimension* with Baritone. Deaths in another dimension are never
+  offered as "nearest" — a Nether death is not reachable from the Overworld.
+- **Marked recovered automatically** once you are within `recovered-radius`, and surfaced in the HUD as a
+  distance to the nearest pending death.
+
+### Added — player radar (`player-radar`)
+
+- **Approaching, not merely present.** `ProximityRadar` classifies each contact as ENTERED, APPROACHING,
+  RECEDING, STEADY or LEFT from the change in distance, so an alert means someone is closing on you.
+- **Bounded, evicting contact list** so a busy server cannot grow it without limit; a player not seen for
+  `expire-seconds` is dropped and reported as `PLAYER_LEFT_RANGE`.
+- **Automation events** (`PLAYER_NEARBY`, `PLAYER_APPROACHING`, `PLAYER_LEFT_RANGE`) and a HUD line with
+  the nearest player and distance. It only observes — it never attacks anyone.
+
+### Changed
+
+- The HUD gained toggles for the running job, the nearest player and the nearest un-recovered death.
+- The database export gained a `deaths` section (eleven sections total).
+
 ## [2.6.1] — 2026-11-12
 
 The rename release. The project is now **Baritone Anarchy Expansion** to match the repository

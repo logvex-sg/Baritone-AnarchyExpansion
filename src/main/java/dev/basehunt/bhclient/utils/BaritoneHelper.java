@@ -4,7 +4,17 @@ import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
 import baritone.api.Settings;
 import baritone.api.pathing.goals.Goal;
+import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.selection.ISelection;
+import baritone.api.utils.BlockOptionalMeta;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.BlockPos;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.function.Predicate;
 
 /**
  * Thin wrapper around Baritone so every module can stay quiet about whether Baritone is actually present.
@@ -184,9 +194,173 @@ public final class BaritoneHelper {
         baritone.getCommandManager().execute(command);
     }
 
+    /**
+     * Runs a Baritone command and reports whether it was accepted. Used by the job layer so a refused
+     * command (an unknown selector, a missing schematic) is reported instead of looking like success.
+     */
+    public static boolean command(String command) {
+        IBaritone baritone = get();
+        if (baritone == null || command == null || command.isBlank()) return false;
+
+        try {
+            return baritone.getCommandManager().execute(command);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Digs a straight tunnel: {@code #tunnel <height>}. Height 0 is a 1x1 tunnel at eye level. */
+    public static boolean tunnel(int height) {
+        return command("#tunnel " + Math.max(0, height));
+    }
+
     public static String getPrefix() {
         Settings settings = settings();
         return settings == null ? "" : settings.prefix.value;
+    }
+
+    // Baritone processes
+
+    /**
+     * Mines blocks matching {@code name} until {@code quantity} have been collected.
+     *
+     * <p>{@code name} is a block or item selector understood by Baritone, e.g. {@code diamond_ore}. A
+     * {@code quantity} of 0 mines until the process finds nothing more.
+     *
+     * @return true when the job was handed to Baritone
+     */
+    public static boolean mine(String name, int quantity) {
+        IBaritone baritone = get();
+        if (baritone == null || name == null || name.isBlank()) return false;
+
+        baritone.getMineProcess().mineByName(Math.max(0, quantity), name);
+        return true;
+    }
+
+    /** Walks (not flies) to an exact block position. */
+    public static boolean gotoBlock(int x, int y, int z) {
+        IBaritone baritone = get();
+        if (baritone == null) return false;
+
+        baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(x, y, z));
+        return true;
+    }
+
+    /** Finds and walks to the nearest block of the given type. */
+    public static boolean getToBlock(String name) {
+        IBaritone baritone = get();
+        if (baritone == null || name == null || name.isBlank()) return false;
+
+        baritone.getGetToBlockProcess().getToBlock(new BlockOptionalMeta(name));
+        return true;
+    }
+
+    /** Follows a player by name until the process is cancelled. */
+    public static boolean follow(String playerName) {
+        IBaritone baritone = get();
+        if (baritone == null || playerName == null || playerName.isBlank()) return false;
+
+        String needle = playerName.toLowerCase(Locale.ROOT);
+        Predicate<Entity> filter = entity ->
+            entity instanceof PlayerEntity player
+                && player.getGameProfile().name().toLowerCase(Locale.ROOT).equals(needle);
+
+        baritone.getFollowProcess().follow(filter);
+        return true;
+    }
+
+    /** Follows any entity matching a predicate (used for item pickup too). */
+    public static boolean follow(Predicate<Entity> filter) {
+        IBaritone baritone = get();
+        if (baritone == null || filter == null) return false;
+
+        baritone.getFollowProcess().follow(filter);
+        return true;
+    }
+
+    /** Picks up dropped items matching a predicate. */
+    public static boolean pickupItems(Predicate<ItemStack> filter) {
+        IBaritone baritone = get();
+        if (baritone == null || filter == null) return false;
+
+        baritone.getFollowProcess().pickup(filter);
+        return true;
+    }
+
+    /** True while the follow process is tracking something. */
+    public static boolean isFollowing() {
+        IBaritone baritone = get();
+        if (baritone == null) return false;
+
+        List<Entity> following = baritone.getFollowProcess().following();
+        return following != null && !following.isEmpty();
+    }
+
+    /** Runs Baritone's own chunk explorer centred on a chunk coordinate. */
+    public static boolean explore(int centerX, int centerZ) {
+        IBaritone baritone = get();
+        if (baritone == null) return false;
+
+        baritone.getExploreProcess().explore(centerX, centerZ);
+        return true;
+    }
+
+    /** Harvests nearby crops, optionally bounded to a radius around the player. */
+    public static boolean farm(int range) {
+        IBaritone baritone = get();
+        if (baritone == null) return false;
+
+        if (range <= 0) baritone.getFarmProcess().farm();
+        else baritone.getFarmProcess().farm(range);
+        return true;
+    }
+
+    /** Builds a schematic from the {@code schematics} folder at the given origin. */
+    @SuppressWarnings("deprecation")
+    public static boolean build(String schematicFile, int x, int y, int z) {
+        IBaritone baritone = get();
+        if (baritone == null || schematicFile == null || schematicFile.isBlank()) return false;
+
+        return baritone.getBuilderProcess().build(schematicFile, new BlockPos(x, y, z));
+    }
+
+    /** True while the builder process is paused. */
+    public static boolean builderPaused() {
+        IBaritone baritone = get();
+        return baritone != null && baritone.getBuilderProcess().isPaused();
+    }
+
+    public static void builderPause() {
+        IBaritone baritone = get();
+        if (baritone != null) baritone.getBuilderProcess().pause();
+    }
+
+    public static void builderResume() {
+        IBaritone baritone = get();
+        if (baritone != null) baritone.getBuilderProcess().resume();
+    }
+
+    /** The current selection corners, or an empty list when nothing is selected. */
+    public static List<ISelection> selections() {
+        IBaritone baritone = get();
+        if (baritone == null) return List.of();
+
+        ISelection[] selections = baritone.getSelectionManager().getSelections();
+        return selections == null ? List.of() : List.of(selections);
+    }
+
+    /** Cancels every Baritone process, not just pathing. */
+    public static void cancelAllProcesses() {
+        IBaritone baritone = get();
+        if (baritone == null) return;
+
+        baritone.getMineProcess().onLostControl();
+        baritone.getFollowProcess().onLostControl();
+        baritone.getExploreProcess().onLostControl();
+        baritone.getFarmProcess().onLostControl();
+        baritone.getBuilderProcess().onLostControl();
+        baritone.getGetToBlockProcess().onLostControl();
+        stop();
     }
 
     private static String describe(Throwable t) {

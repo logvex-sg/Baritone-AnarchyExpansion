@@ -25,12 +25,13 @@ If you only read one section, read [Quick start](#quick-start) and
 14. [Automation engine, tasks and the brain](#automation-engine-tasks-and-the-brain)
 15. [Chat commands and kits](#chat-commands-and-kits)
 16. [6b6t server tools](#6b6t-server-tools)
-17. [The command terminal](#the-command-terminal)
-18. [Discord webhooks](#discord-webhooks)
-19. [Commands](#commands)
-20. [Data, persistence and backups](#data-persistence-and-backups)
-21. [Troubleshooting](#troubleshooting)
-22. [Building from source](#building-from-source)
+17. [Anarchy toolkit](#anarchy-toolkit)
+18. [The command terminal](#the-command-terminal)
+19. [Discord webhooks](#discord-webhooks)
+20. [Commands](#commands)
+21. [Data, persistence and backups](#data-persistence-and-backups)
+22. [Troubleshooting](#troubleshooting)
+23. [Building from source](#building-from-source)
 
 ## What this is
 
@@ -55,7 +56,7 @@ and a set of automatic managers (elytra, mending, ender chest, survival).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add Baritone for Meteor. Only Base Hunter v1 needs it; everything else works without it.
-4. Drop `baritone-anarchy-expansion-2.6.1.jar` into `mods`.
+4. Drop `baritone-anarchy-expansion-2.10.0.jar` into `mods`.
 5. Launch the game and look for the **Baritone Anarchy Expansion** category in Meteor's module list.
 
 Baritone is declared as a `recommends`, not a `depends`, so the addon loads whether or not it is
@@ -108,6 +109,15 @@ All modules live under the **Baritone Anarchy Expansion** category in Meteor's m
 | `6b6t-tps` | off | Polls 6b6t's `/tps` and warns when the server or your link is lagging. |
 | `6b6t-hotspot` | off | Tracks the current 6b6t Hotspot and can teleport you to it. |
 | `6b6t-players` | off | Records 6b6t player sightings with a searchable per-server history. |
+| `baritone-control` | off | Runs Baritone jobs (mine, follow, explore, goto, farm, build, tunnel) and reports completion. |
+| `death-recovery` | off | Records where you died and what you carried, and can fly you back to recover it. |
+| `player-radar` | off | Tracks nearby players and warns when one is approaching. |
+| `smooth-look` | off | Turns the camera smoothly toward a target instead of snapping to it. |
+| `human-behavior` | off | Idles with the small, irregular movements of a real player. |
+| `behavior-monitor` | off | Scores how human the recent movement and camera look. |
+| `threat-monitor` | off | Scores nearby players by danger and raises the alarm when it matters. |
+| `panic-retreat` | off | Retreats to the safest nearby cover when a threat is called. |
+| `objective-queue` | off | Keeps a ranked to-do list of anarchy errands so loot is not forgotten. |
 
 ## Automatic elytra management
 
@@ -375,7 +385,9 @@ dimension, flight state, new-chunk count, stash count, player count, v1 destinat
 mode/target/distance/queue, elytra status and spare count, mending status, firework count, free
 inventory slots, survival warning, explored/review chunk counts, current control ownership, storage
 status (`show-storage`), carried shulker counts (`show-shulkers`) and the active automation task, queue
-depth and kit status (`show-automation`).
+depth and kit status (`show-automation`), the running Baritone job (`show-job`), the nearest player
+(`show-radar`), the nearest un-recovered death (`show-deaths`), the current look target (`show-look`) and
+the human-likeness score (`show-human`).
 
 ### Management screen
 
@@ -628,6 +640,129 @@ Open the **6b6t menu** with `/bh 6b6t gui`, or the *Open 6b6t Menu* button in th
 It gives each module a status line and its controls, and lists 6b6t's command catalogue (`/bh 6b6t
 commands` filters it). The terminal exposes the same tools under `sixbt …` and the enlarged `kit …`.
 
+## Anarchy toolkit
+
+Modules that cover the parts of an anarchy session that are not base hunting: gathering and travel
+through Baritone, surviving a death with your loot, knowing when someone is closing in, and — just as
+important — *moving like a person* so an automated client does not stand out.
+
+### Baritone jobs (`baritone-control`)
+
+Baritone knows how to mine a block, follow a player, explore chunks and build a schematic, but it has no
+single place to start a job, remember it is running, notice when it ends and report that. This module is
+that place. A request is parsed by a strict catalogue first, so a typo is refused with a reason instead of
+being handed to Baritone as a job that silently does nothing.
+
+| Command | What it does |
+| --- | --- |
+| `/bh job mine diamond_ore 64` | Mine 64 diamond ore. A bare `mine diamond_ore` mines until nothing is left. |
+| `/bh job goto 100 64 -200` | Walk to an exact block. |
+| `/bh job follow Steve` | Follow a player until cancelled. |
+| `/bh job explore 1000 2000` | Run Baritone's chunk explorer around a point. |
+| `/bh job farm 32` | Harvest crops within 32 blocks. |
+| `/bh job tunnel` | Dig a straight 1×1 tunnel. |
+| `/bh job build house.schem 10 70 10` | Build a schematic at an origin. |
+| `/bh job stop` | Cancel the job and every Baritone process. |
+
+The terminal exposes the same as `job status|stop|mine|goto|follow|explore|farm|tunnel|build|run`, and
+`job run <line>` passes a line through to the same parser. Every job publishes `BARITONE_TASK_STARTED`,
+`BARITONE_TASK_DONE`, `BARITONE_TASK_FAILED` or `BARITONE_TASK_CANCELLED` on the automation bus, so a
+workflow or the automation brain can chain on it. A job that stops moving for `idle-grace-ticks` without
+being cancelled is reported as finished. `auto-pickup` walks over the drops while mining and
+`stop-on-death` cancels the job when you die.
+
+### Death recovery (`death-recovery`)
+
+The moment that matters most on an anarchy server is the moment you die, because that is where your loot
+is, and vanilla forgets it the instant you respawn. This module records the death position, the dimension
+and how much you were carrying, keeps it per server across restarts, warns you in chat, and (with
+`auto-recover`) flies you back with Baritone after you respawn. A death is marked recovered once you are
+within `recovered-radius` of it. The list is bounded, so a long session cannot grow the file without limit.
+
+| Command | What it does |
+| --- | --- |
+| `/bh death list` | Every death recorded on this server, newest first. |
+| `/bh death near` | The nearest un-recovered death in your current dimension. |
+| `/bh death recover` | Fly back to that death. |
+| `/bh death recover-id 7` | Fly back to a specific death. |
+| `/bh death clear` | Forget every death. |
+
+The terminal exposes the same as `death list|near|recover|recover-id|clear`. Deaths in another dimension
+are never offered as "nearest", because a Nether death is not reachable from the Overworld.
+
+### Player radar (`player-radar`)
+
+"There is a player 80 blocks away" is far less useful than "a player is closing on you". This module
+tracks every nearby player's distance and reports when one enters your range, when one is *approaching*
+(not merely present) and when one leaves, pushing `PLAYER_NEARBY`, `PLAYER_APPROACHING` and
+`PLAYER_LEFT_RANGE` onto the automation bus. It only observes — it never attacks anyone. `/bh radar` and
+the terminal's `radar` list the live contacts, nearest first.
+
+### Realistic movement (`smooth-look`, `human-behavior`, `behavior-monitor`)
+
+A client that snaps its camera to a target and then stands perfectly still is the easiest bot to spot.
+These three modules make the movement read as human, and then measure whether it does.
+
+**`smooth-look`** turns the camera the way a wrist turns a mouse. `LookSmoother` approaches a target along
+the shortest arc at a bounded per-tick speed, eases in, and settles with a small seeded jitter that fades
+as the aim arrives. Yaw takes the short way across the ±180° seam (170° → −170° is 20°, not 340°) and pitch
+is clamped to ±90°. It holds the `ROTATION` control lease while turning, so it never fights another module
+for the camera. `face-player` keeps a continuous, smoothly-tracking aim on the nearest player.
+
+| Command | What it does |
+| --- | --- |
+| `/bh look player Steve` | Turn smoothly toward a nearby player |
+| `/bh look at 100 70 -200` | Turn smoothly toward a block position |
+| `/bh look yaw 90 -20` | Turn smoothly to a raw yaw/pitch |
+| `/bh look clear` | Abandon the current look target |
+| `/bh look status` | Show the current look target |
+
+**`human-behavior`** adds the small, purposeless movement a person makes while idle: a glance, a tiny
+strafe, a jump, a brief sneak, a look down at the hotbar — each short and bounded, separated by random
+pauses, never twice the same gesture in a row. It refuses to gesture while another automation owns movement
+and takes the lowest priority, so it can never preempt anything that matters. It presses the same keys a
+player would and forges no packets. `/bh human on|off|status` toggles and inspects it.
+
+**`behavior-monitor`** closes the loop. `BehaviorProfiler` watches a rolling window of yaw and position
+samples and reduces it to how much the turn rate varies, how often you pause, and how straight the path is,
+combined into a 0–100 human-likeness score. A flat 0 ("this looks like a bot") is visible on the HUD and in
+`/bh human profile` instead of being taken on faith. It is read-only, so it runs alongside anything.
+
+The terminal exposes `look status|player|at|yaw|clear` and `human status|on|off|profile`.
+
+### Threat assessment and panic retreat (`threat-monitor`, `panic-retreat`)
+
+A radar that only reports distance is nearly useless on an anarchy server: someone flying straight at you
+from 60 blocks is a bigger problem than someone loitering 30 blocks away in leather.
+
+**`threat-monitor`** scores each nearby player with `ThreatAssessment` — distance, how fast they are closing,
+and what they are wearing and holding (armour, a weapon, a totem, an elytra) — into a 0–100 score and a
+level: calm, wary, danger or flee. The weighting is monotonic and capped: closer is always worse, approaching
+is worse than still, a receding player is no worse than a stationary one, and no single input can push the
+score past 100, so a distant, harmless player can never read as an emergency. Only danger and flee raise the
+alarm, and each player has a cooldown so chat is not spammed. It is a pure observer — it moves nothing and
+attacks nobody.
+
+**`panic-retreat`** reacts to that alarm instead of freezing in the open. It samples the blocks around the
+player and ranks them with `SafeSpotFinder` — cover, a roof overhead, darkness and nearby water score well;
+lava and fire are disqualifying; a long drop is penalised — then walks (via Baritone) to the best spot worth
+using. It takes the `MOVEMENT` lease only while retreating and gives up rather than looping when nothing is
+good enough. It never attacks and never builds.
+
+Read it with `/bh threat`, `/bh threat retreat` or the terminal `threat status|list|retreat`.
+
+### Objective queue (`objective-queue`)
+
+A stash run is more than the task it was started for. **`objective-queue`** watches for the errands you would
+otherwise forget — notable item drops you pass, and the last-seen spot of a tracked player who logged out —
+and queues them through `ObjectivePlanner`, which keeps a bounded, de-duplicated list ranked by worth, minus
+distance, minus a saturating staleness cost. Same-kind objectives within a merge radius are merged rather
+than duplicated. The list persists per server through `ObjectiveStore`, so it survives a restart.
+
+The queue only records and ranks. `/bh objective next` (or terminal `objective next`) sends the player to the
+best one via Baritone, keeping the single-owner rule intact — the queue decides *what* is worth doing, never
+*who* drives. Work the list with `/bh objective [list|next|done <id>|add <label>|clear]`.
+
 ## The command terminal
 
 The terminal is a command line over the whole addon, built into the management screen. Enable
@@ -673,6 +808,11 @@ is case-insensitive and happens before parsing, so `s` runs `status`.
 help [command]          status                    modules [list|search|enable|disable]
 tasks [list|stop|clear] storage [list|search|withdraw|deposit|register|goto|restock]
 navigate <x> <y> <z>    baritone [status|stop]    kit [list|status|claim <name>]
+job [status|stop|mine|goto|follow|explore|farm|tunnel|build|run]
+death [list|near|recover|recover-id|clear]        radar [status|list]
+look [status|player <name>|at <x> <y> <z>|yaw <deg> <pitch>|clear]
+human [status|on|off|profile]   threat [status|list|retreat]
+objective [list|next|done <id>|add <label>|clear]
 elytra [status|replace] echest [status|open|organise|goto]   player [list|search <q>]
 stash [list|nearby|search <q>]   route [list|add|clear|start|stop]
 explore [grid|spiral|adaptive|heading|custom|stop|status]
@@ -835,10 +975,29 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh 6b6t players` | Players seen on this server |
 | `/bh 6b6t commands [filter]` | 6b6t's command catalogue |
 
+### Anarchy toolkit
+
+| Command | What it does |
+| --- | --- |
+| `/bh job mine <block> [qty]` | Mine a block with Baritone until the quantity is reached |
+| `/bh job goto <x> <y> <z>` | Walk to an exact block |
+| `/bh job follow <player>` | Follow a player until cancelled |
+| `/bh job explore [x z]` / `farm [range]` / `tunnel` / `build <file> <x> <y> <z>` | The other Baritone jobs |
+| `/bh job stop` | Cancel the running job and every Baritone process |
+| `/bh death list` / `near` / `recover` / `recover-id <id>` / `clear` | Death memory and fly-back recovery |
+| `/bh radar` | The players currently near you, nearest first |
+| `/bh look player <name>` / `at <x> <y> <z>` / `yaw <deg> <pitch>` / `clear` / `status` | Turn the camera smoothly toward a target |
+| `/bh human on` / `off` / `status` / `profile` | Toggle the idle gestures; `profile` prints the human-likeness score |
+| `/bh threat` / `status` / `list` | The scored threats nearby, worst first |
+| `/bh threat retreat` | Arm the panic retreat |
+| `/bh objective list` | The ranked anarchy to-do list |
+| `/bh objective next` | Send the player to the best objective via Baritone |
+| `/bh objective done <id>` / `add <label>` / `clear` | Complete, add to, or empty the list |
+
 ## Data, persistence and backups
 
 State is stored per server address, so travelling between anarchy servers never mixes coordinates up.
-Ten stores persist to NBT under Meteor's config folder:
+Twelve stores persist to NBT under Meteor's config folder:
 
 | Store | File | Contents |
 | --- | --- | --- |
@@ -852,8 +1011,10 @@ Ten stores persist to NBT under Meteor's config folder:
 | `KitLoadoutStore` | `base-hunting-kit-loadouts.nbt` | 6b6t kit-maker loadouts, per server |
 | `SixbtServerStore` | `base-hunting-6b6t.nbt` | The 6b6t home book, per server |
 | `SixbtPlayerStore` | `base-hunting-6b6t-players.nbt` | 6b6t player sightings, bounded and evicting |
+| `DeathStore` | `base-hunting-deaths.nbt` | Death positions and carried-item counts, per server, bounded |
+| `ObjectiveStore` | `base-hunting-objectives.nbt` | The ranked anarchy to-do list, per server, bounded |
 
-All ten are versioned. Each store reads its records tolerantly: **a single corrupted record is
+All twelve are versioned. Each store reads its records tolerantly: **a single corrupted record is
 skipped, never fatal** — one bad entry cannot cost you the rest of the database. The number of records
 skipped on the last load is reported by `/bh database status` and in the management screen's Database
 section, and logged at startup. Meteor itself also writes a timestamped `.backup.nbt` if a whole file
@@ -904,21 +1065,23 @@ the addon. See the build notes in `AGENTS.md` about Xvfb and software GL.
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.6.1.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.10.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
 `verifyAddon` is the fast pre-flight check and is wired into `check`, so `./gradlew build` runs it too.
-It runs eight headless suites: `plannerTest` (flight-planner maths), `coreLogicTest` (elytra,
+It runs eleven headless suites: `plannerTest` (flight-planner maths), `coreLogicTest` (elytra,
 deployment — including the bounded-retry `DeploymentGovernor` regression — mending, inventory, stash
 scoring, chunk dedup, target ranking, persistence recovery, scheduler and event bus), `storageLogicTest`,
 `automationLogicTest`, `hardeningTest` (bounded collections, embed dedupe, database coverage),
 `terminalLogicTest` (the terminal parser, history, shortcuts, registry dispatch/permissions/
-confirmation/completion and macros), `apiContractTest` (asserts the Meteor/Minecraft members the addon
-drives still exist) and `baritoneContractTest` (asserts the Baritone members the addon drives still
-exist).
+confirmation/completion and macros), `sixbtLogicTest` (the 6b6t command/chat/kit/delivery logic),
+`anarchyToolkitTest` (the Baritone job parser, death memory and proximity radar), `smoothLookTest`
+(the smooth-look camera, human-behavior gestures and the behavior profiler), `apiContractTest` (asserts
+the Meteor/Minecraft members the addon drives still exist) and `baritoneContractTest` (asserts the
+Baritone members the addon drives still exist).
 
 See `AGENTS.md` for the architecture and the development constraints, including how to run the client
 headlessly.

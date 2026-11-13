@@ -11,9 +11,19 @@ import dev.basehunt.bhclient.gui.BaseHuntingScreen;
 import dev.basehunt.bhclient.modules.BaseHunter;
 import dev.basehunt.bhclient.modules.AutoStorage;
 import dev.basehunt.bhclient.modules.AutomationBrain;
+import dev.basehunt.bhclient.modules.BaritoneControl;
 import dev.basehunt.bhclient.modules.BaseHunterV2;
 import dev.basehunt.bhclient.modules.ChatCommands;
 import dev.basehunt.bhclient.modules.CommandTerminal;
+import dev.basehunt.bhclient.modules.DeathRecovery;
+import dev.basehunt.bhclient.modules.BehaviorMonitor;
+import dev.basehunt.bhclient.modules.HumanBehaviorModule;
+import dev.basehunt.bhclient.modules.PlayerRadar;
+import dev.basehunt.bhclient.modules.SmoothLook;
+import dev.basehunt.bhclient.modules.ThreatMonitor;
+import dev.basehunt.bhclient.modules.PanicRetreat;
+import dev.basehunt.bhclient.modules.ObjectiveQueue;
+import dev.basehunt.bhclient.core.logic.ObjectivePlanner;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -34,6 +44,7 @@ import dev.basehunt.bhclient.modules.SurvivalManager;
 import dev.basehunt.bhclient.modules.WebhookNotifier;
 import dev.basehunt.bhclient.systems.ContainerInteractionManager;
 import dev.basehunt.bhclient.systems.DatabaseIO;
+import dev.basehunt.bhclient.systems.DeathStore;
 import dev.basehunt.bhclient.systems.EnderChestStore;
 import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.PlayerTracker;
@@ -124,6 +135,13 @@ public class BaseHuntCommand extends Command {
         buildV2(builder);
         buildFly(builder);
         buildBaritone(builder);
+        buildJob(builder);
+        buildDeath(builder);
+        buildRadar(builder);
+        buildLook(builder);
+        buildHuman(builder);
+        buildThreat(builder);
+        buildObjective(builder);
         buildStash(builder);
         buildPlayer(builder);
         buildElytra(builder);
@@ -284,6 +302,501 @@ public class BaseHuntCommand extends Command {
         info("  Pathing: %s, elytra flight: %s",
             BaritoneHelper.isPathing() ? "yes" : "no",
             BaritoneHelper.isElytraLoaded() ? "yes" : "no");
+    }
+
+    /**
+     * {@code /bh job ...} - drives Baritone's own processes (mine, follow, explore, goto, farm, build,
+     * tunnel) through {@link BaritoneControl}, which reports each job as an automation event.
+     */
+    private void buildJob(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("job")
+            .executes(context -> {
+                jobStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                jobStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("stop").executes(context -> {
+                BaritoneControl control = Modules.get().get(BaritoneControl.class);
+                if (control == null) {
+                    error("The Baritone control module is not loaded.");
+                } else {
+                    control.cancel();
+                    info("Baritone job cancelled.");
+                }
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("mine")
+                .then(argument("block", StringArgumentType.word())
+                    .executes(context -> runJob("mine " + StringArgumentType.getString(context, "block")))
+                    .then(argument("quantity", integer(1))
+                        .executes(context -> runJob("mine %s %d".formatted(
+                            StringArgumentType.getString(context, "block"),
+                            getInteger(context, "quantity")))))
+                )
+            )
+            .then(literal("goto")
+                .then(argument("x", integer())
+                    .then(argument("y", integer())
+                        .then(argument("z", integer()).executes(context -> runJob("goto %d %d %d".formatted(
+                            getInteger(context, "x"), getInteger(context, "y"), getInteger(context, "z")))))))
+            )
+            .then(literal("follow")
+                .then(argument("player", StringArgumentType.word())
+                    .executes(context -> runJob("follow " + StringArgumentType.getString(context, "player"))))
+            )
+            .then(literal("explore")
+                .executes(context -> runJob("explore"))
+                .then(argument("x", integer())
+                    .then(argument("z", integer()).executes(context -> runJob("explore %d %d".formatted(
+                        getInteger(context, "x"), getInteger(context, "z"))))))
+            )
+            .then(literal("farm")
+                .executes(context -> runJob("farm"))
+                .then(argument("range", integer(0))
+                    .executes(context -> runJob("farm " + getInteger(context, "range"))))
+            )
+            .then(literal("tunnel").executes(context -> runJob("tunnel")))
+            .then(literal("build")
+                .then(argument("file", StringArgumentType.word())
+                    .then(argument("x", integer())
+                        .then(argument("y", integer())
+                            .then(argument("z", integer()).executes(context -> runJob("build %s %d %d %d".formatted(
+                                StringArgumentType.getString(context, "file"),
+                                getInteger(context, "x"), getInteger(context, "y"), getInteger(context, "z")))))))
+                )
+            )
+            .then(literal("run")
+                .then(argument("line", StringArgumentType.greedyString())
+                    .executes(context -> runJob(StringArgumentType.getString(context, "line"))))
+            )
+        );
+    }
+
+    private int runJob(String line) {
+        BaritoneControl control = Modules.get().get(BaritoneControl.class);
+        if (control == null) {
+            error("The Baritone control module is not loaded.");
+            return SINGLE_SUCCESS;
+        }
+        if (!control.isActive()) control.enable();
+        info("%s", control.run(line));
+        return SINGLE_SUCCESS;
+    }
+
+    private void jobStatus() {
+        BaritoneControl control = Modules.get().get(BaritoneControl.class);
+        if (control == null || !control.isActive()) {
+            info("Baritone jobs: (highlight)inactive");
+            return;
+        }
+        info("Baritone jobs");
+        for (String line : control.describe()) info("  %s", line);
+    }
+
+    /**
+     * {@code /bh death ...} - the recorded death list and recovery. The {@link DeathRecovery} module records
+     * a death automatically; these commands inspect the list and fly back to a spot.
+     */
+    private void buildDeath(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("death")
+            .executes(context -> {
+                deathList();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("list").executes(context -> {
+                deathList();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("recover").executes(context -> {
+                deathRecoverNearest();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("recover-id")
+                .then(argument("id", integer(1)).executes(context -> {
+                    deathRecoverById(getInteger(context, "id"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("near").executes(context -> {
+                deathNearest();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("clear").executes(context -> {
+                DeathStore store = DeathStore.get();
+                if (store == null) {
+                    error("The death store is not loaded.");
+                } else {
+                    int removed = store.removeWhere(record -> true);
+                    info("Cleared %d death record(s).", removed);
+                }
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void deathList() {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        info("Deaths on this server");
+        for (String line : recovery.describe()) info("  %s", line);
+    }
+
+    private void deathNearest() {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        info("%s", recovery.statusLine());
+    }
+
+    private void deathRecoverNearest() {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        if (!recovery.isActive()) recovery.enable();
+        info("%s", recovery.recoverNearest());
+    }
+
+    private void deathRecoverById(int id) {
+        DeathRecovery recovery = Modules.get().get(DeathRecovery.class);
+        if (recovery == null) {
+            error("The death recovery module is not loaded.");
+            return;
+        }
+        if (!recovery.isActive()) recovery.enable();
+        info("%s", recovery.recoverById(id));
+    }
+
+    /**
+     * {@code /bh radar ...} - the nearby-player radar. The {@link PlayerRadar} module watches distances and
+     * reports approaches; these commands show the live contact list.
+     */
+    private void buildRadar(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("radar")
+            .executes(context -> {
+                radarStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                radarStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                radarStatus();
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void radarStatus() {
+        PlayerRadar radar = Modules.get().get(PlayerRadar.class);
+        if (radar == null) {
+            error("The player radar module is not loaded.");
+            return;
+        }
+        if (!radar.isActive()) radar.enable();
+        info("Nearby players");
+        for (String line : radar.describe()) info("  %s", line);
+    }
+
+    /**
+     * {@code /bh look ...} - the smooth-look camera. The {@link SmoothLook} module eases the view toward a
+     * target instead of snapping to it; these commands set a target and report the state.
+     */
+    private void buildLook(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("look")
+            .executes(context -> {
+                lookStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                lookStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("player")
+                .then(argument("name", StringArgumentType.word()).executes(context -> {
+                    lookPlayer(StringArgumentType.getString(context, "name"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("at")
+                .then(argument("x", integer())
+                    .then(argument("y", integer())
+                        .then(argument("z", integer()).executes(context -> {
+                            lookAt(getInteger(context, "x"), getInteger(context, "y"),
+                                getInteger(context, "z"));
+                            return SINGLE_SUCCESS;
+                        }))
+                    )
+                )
+            )
+            .then(literal("yaw")
+                .then(argument("degrees", integer(-180, 180))
+                    .then(argument("pitch", integer(-90, 90)).executes(context -> {
+                        look(getInteger(context, "degrees"), getInteger(context, "pitch"));
+                        return SINGLE_SUCCESS;
+                    }))
+                )
+            )
+            .then(literal("clear").executes(context -> {
+                SmoothLook look = Modules.get().get(SmoothLook.class);
+                if (look != null) look.clearTarget();
+                info("Look target cleared.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void lookStatus() {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+        info("Smooth look: %s", look.statusLine());
+    }
+
+    private void lookPlayer(String name) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+
+        if (mc.player == null || mc.world == null) return;
+
+        for (var player : mc.world.getPlayers()) {
+            if (player.getGameProfile().name().equalsIgnoreCase(name)) {
+                look.lookAt(player.getX(), player.getEyeY(), player.getZ());
+                info("Turning smoothly toward %s.", name);
+                return;
+            }
+        }
+        error("No player named %s is in view.", name);
+    }
+
+    private void lookAt(int x, int y, int z) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+        look.lookAt(x, y, z);
+        info("Turning smoothly toward %d %d %d.", x, y, z);
+    }
+
+    private void look(int yaw, int pitch) {
+        SmoothLook look = Modules.get().get(SmoothLook.class);
+        if (look == null) {
+            error("The smooth-look module is not loaded.");
+            return;
+        }
+        if (!look.isActive()) look.enable();
+        look.look(yaw, pitch);
+        info("Turning smoothly to yaw %d pitch %d.", yaw, pitch);
+    }
+
+    /**
+     * {@code /bh human ...} - the human-behavior idle gestures. The {@link HumanBehaviorModule} makes the
+     * small movements a real player makes so an idling client does not look automated.
+     */
+    private void buildHuman(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("human")
+            .executes(context -> {
+                humanStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                humanStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("on").executes(context -> {
+                humanToggle(true);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("off").executes(context -> {
+                humanToggle(false);
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("profile").executes(context -> {
+                humanProfile();
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void humanStatus() {
+        HumanBehaviorModule human = Modules.get().get(HumanBehaviorModule.class);
+        if (human == null) {
+            error("The human-behavior module is not loaded.");
+            return;
+        }
+        info("Human behavior: %s (%s, %d gestures)", human.isActive() ? "on" : "off",
+            human.statusLine(), human.gestures());
+    }
+
+    private void humanProfile() {
+        BehaviorMonitor monitor = Modules.get().get(BehaviorMonitor.class);
+        if (monitor == null) {
+            error("The behavior monitor module is not loaded.");
+            return;
+        }
+        if (!monitor.isActive()) monitor.enable();
+        info("Human-likeness: %s", monitor.describe());
+    }
+
+    private void humanToggle(boolean on) {
+        HumanBehaviorModule human = Modules.get().get(HumanBehaviorModule.class);
+        if (human == null) {
+            error("The human-behavior module is not loaded.");
+            return;
+        }
+        if (on && !human.isActive()) human.enable();
+        if (!on && human.isActive()) human.disable();
+        info("Human behavior %s.", on ? "enabled" : "disabled");
+    }
+
+    /**
+     * {@code /bh threat ...} - the threat monitor and the panic retreat. The {@link ThreatMonitor} scores
+     * nearby players; the {@link PanicRetreat} moves to a safer spot when the score says it matters.
+     */
+    private void buildThreat(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("threat")
+            .executes(context -> {
+                threatStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                threatStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                threatStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("retreat").executes(context -> {
+                PanicRetreat retreat = Modules.get().get(PanicRetreat.class);
+                if (retreat == null) {
+                    error("The panic-retreat module is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                if (!retreat.isActive()) retreat.enable();
+                info("Panic retreat: %s.", retreat.isRetreating() ? "retreating" : "armed");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void threatStatus() {
+        ThreatMonitor monitor = Modules.get().get(ThreatMonitor.class);
+        if (monitor == null) {
+            error("The threat-monitor module is not loaded.");
+            return;
+        }
+        if (!monitor.isActive()) monitor.enable();
+        info("Threat level: %s", monitor.worstLevel().name().toLowerCase());
+        for (String line : monitor.describe()) info("  %s", line);
+    }
+
+    /**
+     * {@code /bh objective ...} - the ranked anarchy to-do list. The {@link ObjectiveQueue} collects the
+     * errands worth doing and the store persists them; these commands read the list and send you to the best
+     * one.
+     */
+    private void buildObjective(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("objective")
+            .executes(context -> {
+                objectiveStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("list").executes(context -> {
+                objectiveStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("next").executes(context -> {
+                objectiveNext();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("goto").executes(context -> {
+                objectiveNext();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("done")
+                .then(argument("id", integer()).executes(context -> {
+                    objectiveDone(getInteger(context, "id"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("add")
+                .then(argument("label", StringArgumentType.greedyString()).executes(context -> {
+                    objectiveAdd(StringArgumentType.getString(context, "label"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("clear").executes(context -> {
+                var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+                if (store != null) store.clearAll();
+                info("Objective list cleared.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void objectiveStatus() {
+        ObjectiveQueue queue = Modules.get().get(ObjectiveQueue.class);
+        if (queue == null) {
+            error("The objective-queue module is not loaded.");
+            return;
+        }
+        if (!queue.isActive()) queue.enable();
+        for (String line : queue.describe()) info("%s", line);
+    }
+
+    private void objectiveNext() {
+        ObjectiveQueue queue = Modules.get().get(ObjectiveQueue.class);
+        if (queue == null) {
+            error("The objective-queue module is not loaded.");
+            return;
+        }
+        if (!queue.isActive()) queue.enable();
+        info("%s", queue.travelToNext());
+    }
+
+    private void objectiveDone(int id) {
+        var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+        if (store == null) {
+            error("The objective store is not loaded.");
+            return;
+        }
+        info(store.complete(id) ? "Objective #%d completed.".formatted(id)
+            : "No objective #%d.".formatted(id));
+    }
+
+    private void objectiveAdd(String label) {
+        var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+        if (store == null) {
+            error("The objective store is not loaded.");
+            return;
+        }
+        if (mc.player == null) return;
+
+        var objective = store.add(ObjectivePlanner.Kind.CUSTOM, label,
+            (int) Math.floor(mc.player.getX()), (int) Math.floor(mc.player.getY()),
+            (int) Math.floor(mc.player.getZ()), 16);
+        info("Queued objective #%d: %s at %s.".formatted(objective.id(), objective.label(),
+            objective.coords()));
     }
 
     private void buildStash(LiteralArgumentBuilder<CommandSource> builder) {
