@@ -62,7 +62,7 @@ things](docs/GUIDE.md#how-the-automation-decides-things).
 1. Install Fabric Loader for Minecraft 1.21.11.
 2. Put [Meteor Client](https://meteorclient.com/) for 1.21.11 in your `mods` folder.
 3. Optionally add [Baritone for Meteor](https://meteorclient.com/) — only Base Hunter v1 needs it.
-4. Drop `baritone-anarchy-expansion-2.9.0.jar` into `mods`.
+4. Drop `baritone-anarchy-expansion-2.10.0.jar` into `mods`.
 5. Launch the game and look for the **Baritone Anarchy Expansion** category in Meteor's GUI.
 
 Baritone is a `recommends`, not a `depends`, so the addon still loads if you skip it. `baritone` is
@@ -113,6 +113,8 @@ All commands are under `/basehunt` (alias `/bh`). Running `/bh` with no argument
 | `/bh tasks` / `tasks status` | The active and queued automation tasks |
 | `/bh withdraw <item> [amount]` / `deposit <item> [amount]` | Exact-quantity transfer, as a queued task |
 | `/bh kit status` / `list` / `claim <name>` / `all` | Server kit status and claiming |
+| `/bh threat` / `status` / `list` / `retreat` | Scored nearby threats, and arm the panic retreat |
+| `/bh objective` / `list` / `next` / `done <id>` / `add <label>` / `clear` | The ranked anarchy to-do list |
 | `/bh chat run <line>` | Run a chat command line as if you had typed it |
 | `/bh terminal` | Open the management screen, whose Terminal section is at the bottom |
 | `/bh terminal run <line>` | Run one terminal command and echo its output to chat |
@@ -177,13 +179,16 @@ All under the **Baritone Anarchy Expansion** category in Meteor's module list.
 | `smooth-look` | off | Turns the camera smoothly toward a target instead of snapping to it |
 | `human-behavior` | off | Idles with the small, irregular movements of a real player |
 | `behavior-monitor` | off | Scores how human the recent movement and camera look |
+| `threat-monitor` | off | Scores nearby players by danger and raises the alarm when it matters |
+| `panic-retreat` | off | Retreats to the safest nearby cover when a threat is called |
+| `objective-queue` | off | Keeps a ranked to-do list of anarchy errands so loot is not forgotten |
 
 There is also a **Baritone Anarchy Expansion** HUD element with individual toggles for server, position, dimension,
 flight state, new-chunk/stash/player counts, autopilot target and distance, elytra durability, mending
 status, fireworks, free slots, survival warning, exploration progress, control ownership, the active
 automation task, the kit status, the running Baritone job, the nearest player, the nearest
-un-recovered death, the look target and the human-likeness score, and the 6b6t lines (server TPS, hotspot,
-homes and player count).
+un-recovered death, the look target and the human-likeness score, the worst nearby threat and the
+panic-retreat state, the next objective, and the 6b6t lines (server TPS, hotspot, homes and player count).
 
 ## Configuration notes
 
@@ -290,6 +295,7 @@ stash [list|nearby|search <q>]   route [list|add|clear|start|stop]
 explore [grid|spiral|adaptive|heading|custom|stop|status]
 chat [status|prefixes|commands|run <line>]   config [list|get|set]
 database [status|export|import]   history [clear]   macro [list|run <name>]   clear   gui
+threat [status|list|retreat]   objective [list|next|done <id>|add <label>|clear]
 ```
 
 Shortcuts are configurable in the module's `aliases` setting (`s=status`, `w=withdraw`, …). Each
@@ -425,6 +431,36 @@ combined into a 0–100 human-likeness score. A flat 0 ("this looks like a bot")
 
 The terminal exposes `look status|player|at|yaw|clear` and `human status|on|off|profile`.
 
+### Threat assessment and panic retreat — `threat-monitor`, `panic-retreat`
+
+A radar that only reports distance is nearly useless on an anarchy server: someone flying straight at you
+from 60 blocks is a bigger problem than someone loitering 30 blocks away in leather. **`threat-monitor`**
+scores each nearby player with `ThreatAssessment` — distance, how fast they are closing, and what they are
+wearing and holding (armour, a weapon, a totem, an elytra) — into a 0–100 score and a level: calm, wary,
+danger or flee. The weighting is monotonic and capped, so a bigger danger always scores higher and no single
+input turns a quiet moment into a false alarm. Only danger and flee raise the alarm; each player has a
+cooldown so the chat is not spammed.
+
+**`panic-retreat`** reacts to that alarm instead of freezing in the open. It samples the blocks around the
+player and ranks them with `SafeSpotFinder` — cover, a roof overhead, darkness and nearby water score well;
+lava and fire are disqualifying, and a long drop is penalised — then walks (via Baritone) to the best spot
+worth using. It takes the `MOVEMENT` lease while retreating and gives up rather than looping when no spot is
+good enough. Neither module attacks or builds.
+
+Read it with `/bh threat`, `/bh threat retreat` or the terminal `threat status|list|retreat`.
+
+### Objective queue — `objective-queue`
+
+A stash run is more than the task it was started for. **`objective-queue`** watches for the errands you would
+otherwise forget — notable item drops you pass, and the last-seen spot of a tracked player who logged out —
+and queues them through `ObjectivePlanner`, which keeps a bounded, de-duplicated list ranked by worth, minus
+distance, minus a saturating staleness cost. The list persists per server (`ObjectiveStore`), so it survives
+a restart. The queue only records and ranks; `/bh objective next` (or terminal `objective next`) sends the
+player to the best one via Baritone, keeping the single-owner rule intact — the queue decides *what* is worth
+doing, never *who* drives.
+
+Work it with `/bh objective [list|next|done <id>|add <label>|clear]` or the terminal `objective …`.
+
 ## Storage and inventory
 
 Six modules share one safe pipeline. Every storage action is planned by pure logic, queued to a single
@@ -455,8 +491,9 @@ than pretending it worked.
 
 ## Persistence
 
-Seven stores persist per server address under Meteor's config folder: stashes, players, ender chests,
-exploration (visited chunks + route waypoints), the storage registry, storage workflows and kits. Each is
+Twelve stores persist per server address under Meteor's config folder: stashes, players, ender chests,
+exploration (visited chunks + route waypoints), the storage registry, storage workflows, kits, kit
+loadouts, the 6b6t server record, the 6b6t player log, remembered deaths and the objective queue. Each is
 versioned and reads its records tolerantly, so a single corrupted record is skipped rather than losing
 the whole database — the skipped count is reported by `/bh database status`. `/bh database export`
 writes every store to one file; import applies each section it finds and never wipes a store whose
@@ -476,7 +513,7 @@ See [CHANGELOG.md](CHANGELOG.md). The current release is **2.5.0** — the 6b6t 
 Requires JDK 21.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.9.0.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.10.0.jar
 ./gradlew verifyAddon    # headless logic + API contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```

@@ -17,6 +17,9 @@ import dev.basehunt.bhclient.modules.BehaviorMonitor;
 import dev.basehunt.bhclient.modules.HumanBehaviorModule;
 import dev.basehunt.bhclient.modules.PlayerRadar;
 import dev.basehunt.bhclient.modules.SmoothLook;
+import dev.basehunt.bhclient.modules.ThreatMonitor;
+import dev.basehunt.bhclient.modules.PanicRetreat;
+import dev.basehunt.bhclient.modules.ObjectiveQueue;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -39,6 +42,7 @@ import dev.basehunt.bhclient.modules.WebhookNotifier;
 import dev.basehunt.bhclient.systems.ContainerInteractionManager;
 import dev.basehunt.bhclient.systems.AutomationEngine;
 import dev.basehunt.bhclient.systems.DeathStore;
+import dev.basehunt.bhclient.systems.ObjectiveStore;
 import dev.basehunt.bhclient.systems.EnderChestStore;
 import dev.basehunt.bhclient.systems.ExplorationStore;
 import dev.basehunt.bhclient.systems.KitBotStore;
@@ -83,6 +87,7 @@ public class BaseHuntingAddon extends MeteorAddon {
         Systems.add(new SixbtServerStore());
         Systems.add(new SixbtPlayerStore());
         Systems.add(new DeathStore());
+        Systems.add(new ObjectiveStore());
 
         Modules.get().add(new BaseHunter());
         Modules.get().add(new BaseHunterV2());
@@ -116,6 +121,9 @@ public class BaseHuntingAddon extends MeteorAddon {
         Modules.get().add(new SmoothLook());
         Modules.get().add(new HumanBehaviorModule());
         Modules.get().add(new BehaviorMonitor());
+        Modules.get().add(new ThreatMonitor());
+        Modules.get().add(new PanicRetreat());
+        Modules.get().add(new ObjectiveQueue());
 
         Commands.add(new BaseHuntCommand());
 

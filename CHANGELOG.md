@@ -3,6 +3,48 @@
 All notable changes to the Baritone Anarchy Expansion. Format loosely follows [Keep a
 Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] — 2026-11-13
+
+The anarchy-survival release. Knowing a player is nearby is not the same as knowing you are in danger, and
+a stash run is more than the one errand it was started for. This release adds a threat score, a retreat that
+acts on it, and a ranked to-do list of the loot and bases worth coming back for. Each piece is a pure,
+headlessly tested core, so the suite grows from 997 to 1041 assertions and `./gradlew build` is green
+(21 + 196 + 131 + 147 + 86 + 181 + 21 + 41 + 57 + 58 + 58 + 44).
+
+### Added — threat assessment (`threat-monitor`)
+
+- **Distance is not danger.** `ThreatAssessment` scores each nearby player 0–100 from distance, how fast
+  they are closing, and what they are wearing and holding (armour, a weapon, a totem, an elytra), and sorts
+  them into calm, wary, danger and flee. A leather-clad stranger drifting past is calm; a totem-carrying,
+  netherite-wearing player closing at speed is flee.
+- **Monotonic and capped.** Closer is always worse, approaching is worse than still, a receding player is
+  no worse than a stationary one, and no single input can push the score past 100 — so a distant, harmless
+  player can never read as an emergency. Only danger and flee alarm, with a per-player cooldown.
+- **`/bh threat` and the terminal `threat status|list`** print the scored contacts worst-first; the HUD
+  shows the worst one.
+
+### Added — panic retreat (`panic-retreat`)
+
+- **Duck into cover instead of freezing.** On a danger or flee alarm the module samples the blocks around
+  the player and ranks them with `SafeSpotFinder` — cover, a roof overhead, darkness and nearby water score
+  well, while lava and fire are disqualifying and a long drop is penalised.
+- **Walks, does not teleport.** It sends the player to the best spot worth using via Baritone, holds the
+  `MOVEMENT` lease only while retreating, and gives up rather than looping when nothing is good enough.
+- **`/bh threat retreat`** arms it. It never attacks and never builds.
+
+### Added — objective queue (`objective-queue`)
+
+- **The errands you would otherwise forget.** The module watches for notable item drops you pass and the
+  last-seen spot of a tracked player who logged out, and queues them through `ObjectivePlanner`.
+- **Ranked and bounded.** Each objective is scored by worth, minus distance, minus a saturating staleness
+  cost, so a fresh, valuable objective near you beats a stale one across the map. Same-kind objectives
+  within a merge radius are merged, and the list is capped and de-duplicated.
+- **Persistent.** `ObjectiveStore` saves the queue per server, so it survives a restart; it is the twelfth
+  store in the database export/import path, and the section list is pinned by a headless test.
+- **`/bh objective [list|next|done <id>|add <label>|clear]`** and the terminal `objective …` read and work
+  the list. `next` sends the player to the best one via Baritone; the queue decides *what* is worth doing,
+  never *who* drives.
+
 ## [2.9.0] — 2026-11-13
 
 The realistic-player release. A bot that snaps its camera and stands perfectly still is easy to spot, so

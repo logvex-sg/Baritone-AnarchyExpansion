@@ -95,7 +95,7 @@ tasks.register<JavaExec>("baritoneContractTest") {
 tasks.register("verifyAddon") {
     group = "verification"
     description = "Runs the headless planner, logic, storage, automation, 6b6t and API contract tests."
-    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "automationLogicTest", "terminalLogicTest", "sixbtLogicTest", "hardeningTest", "apiContractTest", "baritoneContractTest", "anarchyToolkitTest", "smoothLookTest")
+    dependsOn("plannerTest", "coreLogicTest", "storageLogicTest", "automationLogicTest", "terminalLogicTest", "sixbtLogicTest", "hardeningTest", "apiContractTest", "baritoneContractTest", "anarchyToolkitTest", "smoothLookTest", "anarchySurvivalTest")
 }
 
 tasks.register<JavaExec>("anarchyToolkitTest") {
@@ -112,6 +112,14 @@ tasks.register<JavaExec>("smoothLookTest") {
     dependsOn("testClasses")
     classpath = sourceSets.test.get().runtimeClasspath + sourceSets.test.get().output
     mainClass.set("dev.basehunt.bhclient.SmoothLookTest")
+}
+
+tasks.register<JavaExec>("anarchySurvivalTest") {
+    group = "verification"
+    description = "Runs the threat scoring, safe-spot ranking and objective queue tests."
+    dependsOn("testClasses")
+    classpath = sourceSets.test.get().runtimeClasspath + sourceSets.test.get().output
+    mainClass.set("dev.basehunt.bhclient.AnarchySurvivalTest")
 }
 
 tasks.register<JavaExec>("sixbtLogicTest") {

@@ -48,7 +48,8 @@ public final class DatabaseIO {
         new Section("kitLoadouts", KitLoadoutStore::get),
         new Section("sixbtServer", SixbtServerStore::get),
         new Section("sixbtPlayers", SixbtPlayerStore::get),
-        new Section("deaths", DeathStore::get)
+        new Section("deaths", DeathStore::get),
+        new Section("objectives", dev.basehunt.bhclient.systems.ObjectiveStore::get)
     );
 
     private DatabaseIO() {

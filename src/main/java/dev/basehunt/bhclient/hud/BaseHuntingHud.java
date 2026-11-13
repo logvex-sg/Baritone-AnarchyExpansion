@@ -210,6 +210,20 @@ public class BaseHuntingHud extends HudElement {
         .build()
     );
 
+    private final Setting<Boolean> showThreat = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-threat")
+        .description("Show the worst nearby threat and the panic-retreat state.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showObjectives = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-objectives")
+        .description("Show the next objective on the anarchy to-do list.")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<SettingColor> labelColor = sgGeneral.add(new ColorSetting.Builder()
         .name("label-color")
         .description("Colour of the labels.")
@@ -413,6 +427,25 @@ public class BaseHuntingHud extends HudElement {
         if (showHuman.get() && monitor != null && monitor.isActive()) {
             String humanLine = monitor.statusLine();
             if (!humanLine.equals("measuring")) lines.add("Human-like: " + humanLine);
+        }
+
+        dev.basehunt.bhclient.modules.ThreatMonitor threat =
+            Modules.get().get(dev.basehunt.bhclient.modules.ThreatMonitor.class);
+        if (showThreat.get() && threat != null && threat.isActive()
+            && !threat.threats().isEmpty()) {
+            lines.add("Threat: " + threat.statusLine());
+            dev.basehunt.bhclient.modules.PanicRetreat retreat =
+                Modules.get().get(dev.basehunt.bhclient.modules.PanicRetreat.class);
+            if (retreat != null && retreat.isActive() && retreat.isRetreating()) {
+                lines.add("Retreat: " + retreat.statusLine());
+            }
+        }
+
+        dev.basehunt.bhclient.modules.ObjectiveQueue objectives =
+            Modules.get().get(dev.basehunt.bhclient.modules.ObjectiveQueue.class);
+        if (showObjectives.get() && objectives != null && objectives.isActive()) {
+            String objectiveLine = objectives.statusLine();
+            if (!objectiveLine.equals("no objectives")) lines.add("Objective: " + objectiveLine);
         }
 
         if (showAutomation.get()) {

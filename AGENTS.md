@@ -9,13 +9,13 @@ Meteor's ElytraFly in Bounce mode, so it needs no fireworks and is limited only 
 JDK 21 required. The Gradle wrapper is the only entry point.
 
 ```bash
-./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.9.0.jar
+./gradlew build          # jar -> build/libs/baritone-anarchy-expansion-2.10.0.jar
 ./gradlew compileJava    # fast syntax/type check
 ./gradlew verifyAddon    # headless planner + logic + contract tests (no display needed)
 ./gradlew runClient      # dev client with Meteor + addon loaded
 ```
 
-`verifyAddon` is the fast pre-flight check. It runs eleven plain `main` classes (not JUnit, which is
+`verifyAddon` is the fast pre-flight check. It runs twelve plain `main` classes (not JUnit, which is
 why `tasks.named<Test>("test") { failOnNoDiscoveredTests = false }` keeps the default test task from
 failing the build), and is wired into `check`, so `./gradlew build` runs it too:
 
@@ -58,6 +58,12 @@ failing the build), and is wired into `check`, so `./gradlew build` runs it too:
   rule and the jump/sneak toggles) and `BehaviorProfiler` (turn-rate variance, pause ratio, path
   straightness, the bounded window and the human-likeness score that separates a mechanical bot from an
   irregular human). 58 assertions, pure.
+- `anarchySurvivalTest` — the survival suite: `ThreatAssessment` (the score and its monotonicity and cap,
+  the level bands and the alarming levels, and the descriptor), `SafeSpotFinder` (cover, roof, darkness
+  and water scoring, the lava/fire disqualification, the drop penalty, the bounded score and the
+  best-first ranking that drops hazards) and `ObjectivePlanner` (add, same-kind merge within a radius,
+  kind separation, worthy/distance/staleness ranking, the bounded cap with eviction, id continuity across
+  a restore and priority monotonicity). 44 assertions, pure.
 - `apiContractTest` — asserts the Meteor/Minecraft members the addon drives still exist, reading them
   out of the dependency jars.
 - `baritoneContractTest` — asserts the Baritone members the addon drives still exist, reading them out
@@ -129,7 +135,10 @@ src/main/java/dev/basehunt/bhclient/
 │   │                              ProximityRadar (contact list + ENTERED/APPROACHING/LEFT transitions),
 │   │                              LookSmoother (eased, jittered camera aim with arc wrapping + arrival),
 │   │                              HumanBehavior (seeded idle-gesture scheduler, anti-repeat, bounded),
-│   │                              BehaviorProfiler (rolling window -> 0-100 human-likeness score)
+│   │                              BehaviorProfiler (rolling window -> 0-100 human-likeness score),
+│   │                              ThreatAssessment (player danger score + calm/wary/danger/flee level),
+│   │                              SafeSpotFinder (cover/roof/darkness/water scoring + best-first rank),
+│   │                              ObjectivePlanner (bounded, merged, worth/distance/staleness ranking)
 │   ├── task/                      the automation work queue:
 │   │                              Task (name/category/priority/progress/attempts/state),
 │   │                              TaskQueue (one runner at a time, dedupe, retry, cancel),
@@ -167,11 +176,14 @@ src/main/java/dev/basehunt/bhclient/
 │                                BaritoneControl (runs Baritone jobs + reports completion),
 │                                DeathRecovery (records deaths + flies back), PlayerRadar (proximity),
 │                                SmoothLook (eased camera aiming), HumanBehaviorModule (idle gestures),
-│                                BehaviorMonitor (scores how human the movement looks)
+│                                BehaviorMonitor (scores how human the movement looks),
+│                                ThreatMonitor (scores nearby threats), PanicRetreat (flees to cover),
+│                                ObjectiveQueue (the ranked anarchy to-do list)
 ├── systems/                     StashManager, PlayerTracker, EnderChestStore, ExplorationStore,
 │                                StorageRegistry, WorkflowManager, KitBotStore, KitLoadoutStore,
 │                                KitChestSource (sources a kit from inventory + nearby containers),
-│                                SixbtServerStore, SixbtPlayerStore, DeathStore (persisted per-server state),
+│                                SixbtServerStore, SixbtPlayerStore, DeathStore, ObjectiveStore
+│                                (persisted per-server state),
 │                                AutomationEngine (task queue + factories), NavigationManager
 │                                (single owner of "go to a position"), DatabaseIO (export/import),
 │                                StorageOperations (live container ↔ pure-planner bridge),

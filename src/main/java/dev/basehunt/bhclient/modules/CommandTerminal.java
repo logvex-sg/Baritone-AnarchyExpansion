@@ -13,6 +13,7 @@ import dev.basehunt.bhclient.core.terminal.MacroStore;
 import dev.basehunt.bhclient.core.terminal.TerminalBuffer;
 import dev.basehunt.bhclient.core.terminal.TerminalCommand;
 import dev.basehunt.bhclient.core.terminal.TerminalContext;
+import dev.basehunt.bhclient.core.logic.ObjectivePlanner;
 import dev.basehunt.bhclient.gui.BaseHuntingScreen;
 import dev.basehunt.bhclient.modules.SixbtHomeManager;
 import dev.basehunt.bhclient.modules.SixbtHotspotTracker;
@@ -302,6 +303,25 @@ public class CommandTerminal extends Module {
             .sub("off", ChatPermissions.Level.MOVEMENT)
             .sub("profile", ChatPermissions.Level.READ_ONLY)
             .build(), this::human);
+
+        registry.register(TerminalCommand.builder("threat", "threat [status|list|retreat]",
+            "read the scored threats nearby and arm the panic retreat",
+            ChatPermissions.Level.MOVEMENT)
+            .sub("status", ChatPermissions.Level.READ_ONLY)
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .sub("retreat", ChatPermissions.Level.MOVEMENT)
+            .build(), this::threat);
+
+        registry.register(TerminalCommand.builder("objective",
+            "objective [list|next|done <id>|add <label>|clear]",
+            "work the ranked anarchy to-do list",
+            ChatPermissions.Level.READ_ONLY)
+            .sub("list", ChatPermissions.Level.READ_ONLY)
+            .sub("next", ChatPermissions.Level.MOVEMENT)
+            .sub("done", ChatPermissions.Level.CONTROL)
+            .sub("add", ChatPermissions.Level.CONTROL)
+            .sub("clear", ChatPermissions.Level.CONTROL)
+            .build(), this::objective);
 
         registry.register(TerminalCommand.builder("kit", "kit [list|status|claim <name>|delivery|deliver <player> <kit>|loadout ...|restock <kit>|whitelist ...]",
             "claim kits, or run the 6b6t kit-maker delivery role", ChatPermissions.Level.READ_ONLY)
@@ -862,6 +882,89 @@ public class CommandTerminal extends Module {
                 context.info("human-likeness: %s", monitor.describe());
             }
             default -> context.error("usage: human [status|on|off|profile]");
+        }
+    }
+
+    private void threat(TerminalContext context) {
+        ThreatMonitor monitor = Modules.get().get(ThreatMonitor.class);
+        if (monitor == null) {
+            context.error("the threat-monitor module is not loaded");
+            return;
+        }
+
+        if (context.argCount() == 0 || context.arg(0).equals("status") || context.arg(0).equals("list")) {
+            if (!monitor.isActive()) monitor.enable();
+            context.info("threat level: %s", monitor.worstLevel().name().toLowerCase());
+            for (String line : monitor.describe()) context.info("  %s", line);
+            return;
+        }
+
+        switch (context.arg(0)) {
+            case "retreat" -> {
+                PanicRetreat retreat = Modules.get().get(PanicRetreat.class);
+                if (retreat == null) {
+                    context.error("the panic-retreat module is not loaded");
+                    return;
+                }
+                if (!retreat.isActive()) retreat.enable();
+                context.info("panic retreat armed (%s)", retreat.statusLine());
+            }
+            default -> context.error("usage: threat [status|list|retreat]");
+        }
+    }
+
+    private void objective(TerminalContext context) {
+        ObjectiveQueue queue = Modules.get().get(ObjectiveQueue.class);
+        var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+        if (queue == null || store == null) {
+            context.error("the objective queue is not loaded");
+            return;
+        }
+
+        String sub = context.arg(0).toLowerCase(Locale.ROOT);
+        switch (sub.isEmpty() ? "list" : sub) {
+            case "list", "status" -> {
+                if (!queue.isActive()) queue.enable();
+                for (String line : queue.describe()) context.info("%s", line);
+            }
+            case "next", "goto" -> {
+                if (!queue.isActive()) queue.enable();
+                context.info("%s", queue.travelToNext());
+            }
+            case "done" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: objective done <id>");
+                    return;
+                }
+                long id;
+                try {
+                    id = Long.parseLong(context.arg(1));
+                } catch (NumberFormatException e) {
+                    context.error("objective id must be a number");
+                    return;
+                }
+                context.info(store.complete(id)
+                    ? "objective #%d completed".formatted(id)
+                    : "no objective #%d".formatted(id));
+            }
+            case "add" -> {
+                if (context.argCount() < 2) {
+                    context.error("usage: objective add <label>");
+                    return;
+                }
+                if (mc.player == null) return;
+                String label = String.join(" ", context.args().subList(1, context.argCount()));
+                var objective = store.add(ObjectivePlanner.Kind.CUSTOM, label,
+                    (int) Math.floor(mc.player.getX()), (int) Math.floor(mc.player.getY()),
+                    (int) Math.floor(mc.player.getZ()), 16);
+                context.info("queued objective #%d: %s at %s", objective.id(), objective.label(),
+                    objective.coords());
+            }
+            case "clear" -> {
+                store.clearAll();
+                context.info("objective list cleared");
+            }
+            default -> context.error("usage: objective [list|next|done <id>|add <label>|clear]");
         }
     }
 

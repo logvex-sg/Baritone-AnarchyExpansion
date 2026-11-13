@@ -129,6 +129,16 @@ public record AutomationEvent(Type type, String source, long timestamp, Map<Stri
         LOOK_COMPLETED,
         HUMAN_GESTURE,
 
+        // Threat assessment and panic retreat
+        THREAT_DETECTED,
+        THREAT_LEVEL_CHANGED,
+        RETREAT_STARTED,
+
+        // Objective queue
+        OBJECTIVE_QUEUED,
+        OBJECTIVE_PURSUED,
+        OBJECTIVE_COMPLETED,
+
         // System
         SYSTEM_ERROR,
         MILESTONE

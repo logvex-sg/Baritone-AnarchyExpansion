@@ -20,6 +20,10 @@ import dev.basehunt.bhclient.modules.BehaviorMonitor;
 import dev.basehunt.bhclient.modules.HumanBehaviorModule;
 import dev.basehunt.bhclient.modules.PlayerRadar;
 import dev.basehunt.bhclient.modules.SmoothLook;
+import dev.basehunt.bhclient.modules.ThreatMonitor;
+import dev.basehunt.bhclient.modules.PanicRetreat;
+import dev.basehunt.bhclient.modules.ObjectiveQueue;
+import dev.basehunt.bhclient.core.logic.ObjectivePlanner;
 import dev.basehunt.bhclient.modules.ChestSorter;
 import dev.basehunt.bhclient.modules.EnderChestManager;
 import dev.basehunt.bhclient.modules.InventoryManager;
@@ -136,6 +140,8 @@ public class BaseHuntCommand extends Command {
         buildRadar(builder);
         buildLook(builder);
         buildHuman(builder);
+        buildThreat(builder);
+        buildObjective(builder);
         buildStash(builder);
         buildPlayer(builder);
         buildElytra(builder);
@@ -660,6 +666,137 @@ public class BaseHuntCommand extends Command {
         if (on && !human.isActive()) human.enable();
         if (!on && human.isActive()) human.disable();
         info("Human behavior %s.", on ? "enabled" : "disabled");
+    }
+
+    /**
+     * {@code /bh threat ...} - the threat monitor and the panic retreat. The {@link ThreatMonitor} scores
+     * nearby players; the {@link PanicRetreat} moves to a safer spot when the score says it matters.
+     */
+    private void buildThreat(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("threat")
+            .executes(context -> {
+                threatStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("status").executes(context -> {
+                threatStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("list").executes(context -> {
+                threatStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("retreat").executes(context -> {
+                PanicRetreat retreat = Modules.get().get(PanicRetreat.class);
+                if (retreat == null) {
+                    error("The panic-retreat module is not loaded.");
+                    return SINGLE_SUCCESS;
+                }
+                if (!retreat.isActive()) retreat.enable();
+                info("Panic retreat: %s.", retreat.isRetreating() ? "retreating" : "armed");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void threatStatus() {
+        ThreatMonitor monitor = Modules.get().get(ThreatMonitor.class);
+        if (monitor == null) {
+            error("The threat-monitor module is not loaded.");
+            return;
+        }
+        if (!monitor.isActive()) monitor.enable();
+        info("Threat level: %s", monitor.worstLevel().name().toLowerCase());
+        for (String line : monitor.describe()) info("  %s", line);
+    }
+
+    /**
+     * {@code /bh objective ...} - the ranked anarchy to-do list. The {@link ObjectiveQueue} collects the
+     * errands worth doing and the store persists them; these commands read the list and send you to the best
+     * one.
+     */
+    private void buildObjective(LiteralArgumentBuilder<CommandSource> builder) {
+        builder.then(literal("objective")
+            .executes(context -> {
+                objectiveStatus();
+                return SINGLE_SUCCESS;
+            })
+            .then(literal("list").executes(context -> {
+                objectiveStatus();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("next").executes(context -> {
+                objectiveNext();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("goto").executes(context -> {
+                objectiveNext();
+                return SINGLE_SUCCESS;
+            }))
+            .then(literal("done")
+                .then(argument("id", integer()).executes(context -> {
+                    objectiveDone(getInteger(context, "id"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("add")
+                .then(argument("label", StringArgumentType.greedyString()).executes(context -> {
+                    objectiveAdd(StringArgumentType.getString(context, "label"));
+                    return SINGLE_SUCCESS;
+                }))
+            )
+            .then(literal("clear").executes(context -> {
+                var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+                if (store != null) store.clearAll();
+                info("Objective list cleared.");
+                return SINGLE_SUCCESS;
+            }))
+        );
+    }
+
+    private void objectiveStatus() {
+        ObjectiveQueue queue = Modules.get().get(ObjectiveQueue.class);
+        if (queue == null) {
+            error("The objective-queue module is not loaded.");
+            return;
+        }
+        if (!queue.isActive()) queue.enable();
+        for (String line : queue.describe()) info("%s", line);
+    }
+
+    private void objectiveNext() {
+        ObjectiveQueue queue = Modules.get().get(ObjectiveQueue.class);
+        if (queue == null) {
+            error("The objective-queue module is not loaded.");
+            return;
+        }
+        if (!queue.isActive()) queue.enable();
+        info("%s", queue.travelToNext());
+    }
+
+    private void objectiveDone(int id) {
+        var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+        if (store == null) {
+            error("The objective store is not loaded.");
+            return;
+        }
+        info(store.complete(id) ? "Objective #%d completed.".formatted(id)
+            : "No objective #%d.".formatted(id));
+    }
+
+    private void objectiveAdd(String label) {
+        var store = dev.basehunt.bhclient.systems.ObjectiveStore.get();
+        if (store == null) {
+            error("The objective store is not loaded.");
+            return;
+        }
+        if (mc.player == null) return;
+
+        var objective = store.add(ObjectivePlanner.Kind.CUSTOM, label,
+            (int) Math.floor(mc.player.getX()), (int) Math.floor(mc.player.getY()),
+            (int) Math.floor(mc.player.getZ()), 16);
+        info("Queued objective #%d: %s at %s.".formatted(objective.id(), objective.label(),
+            objective.coords()));
     }
 
     private void buildStash(LiteralArgumentBuilder<CommandSource> builder) {
