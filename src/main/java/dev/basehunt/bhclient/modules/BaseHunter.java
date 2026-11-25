@@ -181,7 +181,8 @@ public class BaseHunter extends Module {
 
     private final Setting<Double> fireworksKeep = sgRoute.add(new DoubleSetting.Builder()
         .name("fireworks-to-keep")
-        .description("Land and stop when fewer than this many fireworks are left. 0 disables the check.")
+        .description("Pause the hunt when fewer than this many fireworks are left, and resume once restocked. "
+            + "0 disables the check.")
         .defaultValue(16)
         .min(0)
         .sliderRange(0, 256)
@@ -321,6 +322,8 @@ public class BaseHunter extends Module {
     private double travelledBlocks;
 
     private boolean paused;
+    /** Why the route is paused, so the resume condition matches the reason it stopped. */
+    private PauseReason pauseReason = PauseReason.NONE;
     private long lastProgressTime;
     private long lastResumeAttempt;
     private boolean waitingForBaritone;
@@ -333,6 +336,10 @@ public class BaseHunter extends Module {
     private RetryPolicy deployPolicy = new RetryPolicy(6, 1000, 20000);
     private boolean deployFailureReported;
     private long lastDeployAttemptAt;
+    /** True while the hunt is held after losing every elytra; clears as soon as one is worn again. */
+    private boolean noElytraPaused;
+    /** Set while onActivate() runs, so a failed start cannot toggle the module mid-activation. */
+    private boolean activating;
 
 
 
@@ -342,6 +349,15 @@ public class BaseHunter extends Module {
 
     @Override
     public void onActivate() {
+        activating = true;
+        try {
+            activateInternal();
+        } finally {
+            activating = false;
+        }
+    }
+
+    private void activateInternal() {
         waypoints.clear();
         currentDestination = null;
         legStart = null;
@@ -350,7 +366,10 @@ public class BaseHunter extends Module {
         spiralLegIndex = 0;
         travelledBlocks = 0;
         paused = false;
+        pauseReason = PauseReason.NONE;
         waitingForBaritone = false;
+        noElytraPaused = false;
+        deployFailureReported = false;
 
 
         long now = java.lang.System.currentTimeMillis();
@@ -361,7 +380,11 @@ public class BaseHunter extends Module {
             String health = BaritoneHelper.health();
             error("Baritone is not usable: %s. Base Hunter v1 needs Baritone to fly; use v2 for firework-free flight.",
                 health.isEmpty() ? "not installed" : health);
-            toggle();
+            // Only disable when Baritone is genuinely absent. Calling toggle() from onActivate() leaves the
+            // module half-registered (Meteor marks it active before onActivate runs), and a transient probe
+            // miss used to latch and disable the module on every enable. Stay enabled and wait instead.
+            if (!BaritoneHelper.AVAILABLE) toggle();
+            else waitingForBaritone = autoStart.get();
             return;
         }
 
@@ -442,6 +465,7 @@ public class BaseHunter extends Module {
         started = true;
         travelledBlocks = 0;
         legStart = mc.player.getBlockPos();
+        noElytraPaused = false;
         resetDeployPolicy();
 
         if (mode.get() == Mode.Waypoints && waypoints.isEmpty()) {
@@ -453,8 +477,10 @@ public class BaseHunter extends Module {
         }
 
         if (mode.get() == Mode.Waypoints && waypoints.isEmpty()) {
+            // Stay enabled: the player can add a waypoint and press start again. Toggling off here also
+            // fired during onActivate (auto-start), which left the module in a half-toggled state.
             error("No waypoints available. Use %s or find a stash first.", commandHint("waypoint add"));
-            toggle();
+            started = false;
             return;
         }
 
@@ -483,6 +509,17 @@ public class BaseHunter extends Module {
         if (mc.player == null || mc.world == null) return;
         if (!BaritoneHelper.usable()) return;
 
+        // Baritone was still starting when the module was enabled. Now that it answers, begin the route so
+        // enabling early does not leave the hunt silently idle.
+        if (waitingForBaritone) {
+            waitingForBaritone = false;
+            if (configureBaritone.get()) applyBaritoneSettings();
+            if (acceptBaritoneTerms.get()) acceptTerms();
+            if (chatFeedback.get()) info("Baritone is ready, starting the hunt.");
+            startRoute();
+            return;
+        }
+
         // Nothing should fly until the route is actually started, otherwise enabling the module with
         // auto-start off would immediately begin sweeping.
         if (!started) return;
@@ -490,15 +527,32 @@ public class BaseHunter extends Module {
         handlePlayerSafety();
         handleElytraEquipment();
 
+        // An elytra-less hunt has nothing to fly with. Hold here instead of disabling so the route survives
+        // until a spare is equipped (from the inventory or an ender chest).
+        if (noElytraPaused) {
+            BaritoneHelper.stop();
+            return;
+        }
+
         if (paused) {
-            if (resumeAfterPlayersLeave.get() && !anyPlayerNearby()) {
-                paused = false;
-                if (chatFeedback.get()) info("Players gone, resuming route.");
-                advanceToNextDestination(true);
-            } else {
+            boolean resuming = switch (pauseReason) {
+                case PLAYER -> resumeAfterPlayersLeave.get() && !anyPlayerNearby();
+                case FIREWORKS -> fireworksAvailable();
+                case NONE -> true;
+            };
+
+            if (!resuming) {
                 BaritoneHelper.stop();
                 return;
             }
+
+            paused = false;
+            PauseReason why = pauseReason;
+            pauseReason = PauseReason.NONE;
+            if (chatFeedback.get()) {
+                info(why == PauseReason.FIREWORKS ? "Restocked, resuming route." : "Players gone, resuming route.");
+            }
+            advanceToNextDestination(true);
         }
 
         if (currentDestination == null) {
@@ -512,8 +566,14 @@ public class BaseHunter extends Module {
         }
 
         if (!fireworksAvailable()) {
-            if (chatFeedback.get()) warning("Out of fireworks, stopping the hunt.");
-            stopAndMaybeDisconnect("Out of fireworks");
+            // Pause rather than disable: the player can land, restock and let the route continue. Disabling
+            // the module here meant one empty firework stack silently ended the hunt and cleared the route.
+            if (!paused) {
+                paused = true;
+                pauseReason = PauseReason.FIREWORKS;
+                BaritoneHelper.stop();
+                if (chatFeedback.get()) warning("Out of fireworks, pausing the hunt. Restock and it will resume.");
+            }
             return;
         }
 
@@ -557,11 +617,12 @@ public class BaseHunter extends Module {
         if (deployPolicy.exhausted()) {
             if (!deployFailureReported) {
                 deployFailureReported = true;
-                if (chatFeedback.get()) warning("Could not start flying after %d attempts; stopping.", deployPolicy.attempts());
+                if (chatFeedback.get()) warning("Could not start flying after %d attempts; pausing. "
+                    + "Land, then the hunt will try again.", deployPolicy.attempts());
                 if (notifyStateChanges.get() && webhook.isEnabled() && !WebhookSettings.globallyMuted()) {
                     webhook.send(new WebhookManager.Embed()
                         .title("Base Hunter deploy failed")
-                        .description("Could not launch after repeated attempts.")
+                        .description("Could not launch after repeated attempts. Paused, will retry.")
                         .color(0xFF5555)
                         .field("State", state.name().toLowerCase())
                         .field("Attempts", String.valueOf(deployPolicy.attempts()))
@@ -571,7 +632,16 @@ public class BaseHunter extends Module {
                         .footer("Baritone Anarchy Expansion"));
                 }
             }
-            stopAndMaybeDisconnect("Could not start flying");
+
+            // Pause rather than disable. Giving up permanently on a launch failure ended the hunt for good
+            // after a single bad takeoff (a wall, a ledge, a lag spike). Landing clears the attempt budget so
+            // the next grounded tick tries again, but the failure stays reported so a stuck launch does not
+            // spam the webhook; only a successful glide clears the flag (see the tick loop).
+            if (state.isSupported()) {
+                deployPolicy.reset();
+            } else {
+                BaritoneHelper.stop();
+            }
             return false;
         }
 
@@ -613,8 +683,18 @@ public class BaseHunter extends Module {
         if (ElytraManager.equipBest()) {
             elytraSwaps++;
             if (chatFeedback.get()) warning("Elytra broke, equipped a spare. %s", ElytraManager.status());
-        } else if (abortWithoutElytra.get()) {
-            stopAndMaybeDisconnect("No elytra left");
+        } else if (abortWithoutElytra.get() && !noElytraPaused) {
+            // Pause instead of disabling: the route is preserved, so taking an elytra out of a chest resumes
+            // the hunt on the next tick. Disabling here threw the route away and looked like the module had
+            // switched itself off.
+            noElytraPaused = true;
+            BaritoneHelper.stop();
+            if (chatFeedback.get()) warning("No elytra left. Paused; the route resumes once you have one.");
+        }
+
+        if (noElytraPaused && ElytraManager.hasElytraEquipped()) {
+            noElytraPaused = false;
+            if (chatFeedback.get()) info("Elytra equipped, resuming the hunt.");
         }
     }
 
@@ -626,6 +706,7 @@ public class BaseHunter extends Module {
         if (nearest == null) return;
 
         paused = true;
+        pauseReason = PauseReason.PLAYER;
         BaritoneHelper.stop();
 
         String name = nearest.getName().getString();
@@ -780,7 +861,9 @@ public class BaseHunter extends Module {
         if (logOutOnArrival.get()) {
             if (chatFeedback.get()) info("Disconnecting.");
             mc.player.networkHandler.getConnection().disconnect(Text.literal("Base Hunter: " + reason));
-        } else {
+        } else if (!activating && isActive()) {
+            // Never toggle() during onActivate(): Meteor already marked the module active, so a toggle here
+            // unregisters it mid-activation and the module looks like it switched itself off.
             toggle();
         }
     }
@@ -813,6 +896,16 @@ public class BaseHunter extends Module {
         // A fresh leg gets a fresh launch budget: a failure on the previous leg must not carry over.
         resetDeployPolicy();
         BaritoneHelper.elytraPathTo(currentDestination);
+    }
+
+    /** Why the route is paused. Each reason has its own resume condition. */
+    private enum PauseReason {
+        /** Not paused. */
+        NONE,
+        /** A player is nearby; resumes when they leave, if configured. */
+        PLAYER,
+        /** Out of fireworks; resumes once restocked. */
+        FIREWORKS
     }
 
     /** Rebuilds the launch retry policy so a new leg (or a restart) starts with a full attempt budget. */

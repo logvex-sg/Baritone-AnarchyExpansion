@@ -86,7 +86,7 @@ public final class ElytraController {
         }
 
         if (!fly.isActive()) fly.enable();
-        return true;
+        return fly.isActive();
     }
 
     /** Turns ElytraFly off and releases the movement keys it may have left held. */

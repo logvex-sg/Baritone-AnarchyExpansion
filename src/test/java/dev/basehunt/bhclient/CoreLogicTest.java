@@ -11,10 +11,12 @@ import dev.basehunt.bhclient.core.logic.ElytraDeployment;
 import dev.basehunt.bhclient.core.logic.ElytraDurability;
 import dev.basehunt.bhclient.core.logic.ExplorationPlanner;
 import dev.basehunt.bhclient.core.logic.ExploredRegions;
+import dev.basehunt.bhclient.core.logic.FlightHold;
 import dev.basehunt.bhclient.core.logic.FlightState;
 import dev.basehunt.bhclient.core.logic.InventoryPlan;
 import dev.basehunt.bhclient.core.logic.ItemCategory;
 import dev.basehunt.bhclient.core.logic.MendingPriorities;
+import dev.basehunt.bhclient.core.logic.ProbeRetry;
 import dev.basehunt.bhclient.core.logic.RecordCodec;
 import dev.basehunt.bhclient.core.logic.RetryPolicy;
 import dev.basehunt.bhclient.core.logic.StashClassification;
@@ -65,6 +67,8 @@ public class CoreLogicTest {
         survivalThresholds();
         scheduler();
         eventBus();
+        probeRetry();
+        flightHold();
 
         System.out.println();
         System.out.println("passed=" + passed + " failed=" + failed);
@@ -100,6 +104,12 @@ public class CoreLogicTest {
             ElytraDurability.canCompleteJourney(200, new int[] {100}, 5000, 16), "not completable");
         check("journey refused when everything is too worn",
             !ElytraDurability.canCompleteJourney(10, new int[] {5}, 100_000, 16), "allowed");
+
+        // Regression: a zero-length journey must not demand the minimum durability. BaseHunterV2 calls
+        // validateJourney(min, 0) purely to check that an elytra exists, so charging the minimum there made a
+        // worn-but-usable elytra fail start-up and abort the route before it began.
+        check("a zero-length journey needs no durability budget",
+            ElytraDurability.canCompleteJourney(0, new int[] {}, 0, 0), "refused a present elytra");
     }
 
     static void deploymentStateMachine() {
@@ -738,6 +748,36 @@ public class CoreLogicTest {
         check("describe is non-empty", !scheduler.describe().isBlank(), "blank");
     }
 
+    /**
+     * Regression: BaritoneHelper latched its first probe failure forever, so the HUD probing Baritone one
+     * frame before it finished initialising left every Baritone-gated module permanently "unusable" and they
+     * disabled themselves on enable.
+     */
+    static void probeRetry() {
+        section("capability probe retry");
+
+        long now = 1_000_000L;
+
+        check("an unprobed capability is probed immediately",
+            ProbeRetry.shouldProbe(false, false, 0, now, 5_000), "skipped the first probe");
+
+        check("a success is never re-probed",
+            !ProbeRetry.shouldProbe(true, true, 0, now + 60_000, 5_000), "re-probed a success");
+
+        check("a fresh failure is trusted for the retry window",
+            !ProbeRetry.shouldProbe(true, false, now, now + 1_000, 5_000), "retried too early");
+
+        check("a failure is retried once the window elapses",
+            ProbeRetry.shouldProbe(true, false, now, now + 5_000, 5_000), "never retried");
+
+        check("a failure is retried after a long delay",
+            ProbeRetry.shouldProbe(true, false, now, now + 600_000, 5_000), "never retried");
+
+        check("a non-positive window falls back to the default",
+            ProbeRetry.shouldProbe(true, false, now, now + ProbeRetry.DEFAULT_RETRY_MS, 0),
+            "default window not applied");
+    }
+
     static void eventBus() {
         section("event bus");
 
@@ -777,5 +817,64 @@ public class CoreLogicTest {
 
         bus.clear();
         check("clear empties the history", bus.historySize() == 0, "not empty");
+    }
+
+    static void flightHold() {
+        section("flight hold and resume");
+
+        // A route with no elytra is parked, not ended. This is the regression: the old code called
+        // stopAndMaybeDisconnect(), which disabled the module and looked like a spontaneous shutdown.
+        FlightHold hold = new FlightHold(3);
+        hold.hold(FlightHold.Reason.NO_ELYTRA);
+        check("a route with no elytra is held", hold.holding(), "not held");
+        check("the hold reason is recorded", hold.reason() == FlightHold.Reason.NO_ELYTRA, "wrong reason");
+
+        // Held with no elytra: stay held, even on solid ground.
+        check("no elytra on the ground keeps the hold",
+            FlightHold.decide(true, false, true) == FlightHold.Decision.HOLD, "resumed");
+
+        // Held with an elytra but still falling: stay held, because a launch cannot succeed mid-fall.
+        check("an elytra mid-fall keeps the hold",
+            FlightHold.decide(true, true, false) == FlightHold.Decision.HOLD, "resumed");
+
+        // Elytra worn and on solid ground: resume.
+        check("an elytra on the ground resumes the route",
+            FlightHold.decide(true, true, true) == FlightHold.Decision.RESUME, "still held");
+
+        // Not held: normal flight, regardless of equipment.
+        check("a route that is not held continues",
+            FlightHold.decide(false, false, false) == FlightHold.Decision.CONTINUE, "not continuing");
+
+        // The announcement fires once per hold, not every tick.
+        check("the hold is announced once", hold.shouldAnnounce(), "not announced");
+        check("the hold is not announced again", !hold.shouldAnnounce(), "announced twice");
+
+        // Holding again while held keeps the first reason, so a later, less specific reason cannot mask it.
+        hold.hold(FlightHold.Reason.LAUNCH_FAILING);
+        check("a second hold keeps the original reason",
+            hold.reason() == FlightHold.Reason.NO_ELYTRA, "reason replaced");
+
+        // Releasing returns to normal flight and re-arms the announcement for the next hold.
+        hold.release();
+        check("release clears the hold", !hold.holding(), "still held");
+        hold.hold(FlightHold.Reason.LAUNCH_FAILING);
+        check("a new hold is announced again", hold.shouldAnnounce(), "not announced");
+
+        // The restart budget is bounded, so a genuinely impossible launch holds instead of looping.
+        FlightHold budget = new FlightHold(3);
+        int granted = 0;
+        while (budget.tryRestart()) granted++;
+        check("restarts are capped at the configured budget", granted == 3, "granted " + granted);
+        check("an exhausted budget keeps refusing", !budget.tryRestart(), "granted another");
+
+        // A live glide replenishes the budget for the next interruption.
+        budget.noteGlide();
+        check("a glide replenishes the restart budget", budget.restarts() == 0, "not reset");
+        check("the budget is usable again after a glide", budget.tryRestart(), "refused");
+
+        // A non-positive budget is coerced to one, so a bad setting cannot make a route unholdable.
+        FlightHold zero = new FlightHold(0);
+        check("a zero budget still allows one restart", zero.tryRestart(), "refused");
+        check("a zero budget then stops", !zero.tryRestart(), "granted another");
     }
 }

@@ -8,6 +8,7 @@ import dev.basehunt.bhclient.core.Lease;
 import dev.basehunt.bhclient.core.Priority;
 import dev.basehunt.bhclient.core.logic.ElytraDeployment;
 import dev.basehunt.bhclient.core.logic.ExplorationPlanner;
+import dev.basehunt.bhclient.core.logic.FlightHold;
 import dev.basehunt.bhclient.core.logic.FlightState;
 import dev.basehunt.bhclient.core.logic.TargetPlanner;
 import dev.basehunt.bhclient.systems.ExplorationStore;
@@ -541,6 +542,12 @@ public class BaseHunterV2 extends Module {
     private boolean started;
     private boolean waitingForWorld;
     private boolean paused;
+    /** Set while onActivate() runs, so a failed start cannot toggle the module mid-activation. */
+    private boolean activating;
+    /** Hold/restart policy: parks the route when flying is impossible instead of ending it. */
+    private final FlightHold hold = new FlightHold(MAX_REDEPLOY_RESTARTS);
+    /** How many times a failed redeploy may restart from the ground before the route is held instead. */
+    private static final int MAX_REDEPLOY_RESTARTS = 3;
     private double travelledBlocks;
     private double lastX, lastZ;
     private long lastProgressWebhook;
@@ -567,6 +574,29 @@ public class BaseHunterV2 extends Module {
 
     @Override
     public void onActivate() {
+        activating = true;
+        try {
+            activateInternal();
+        } finally {
+            activating = false;
+        }
+    }
+
+    /**
+     * Disables the module, except while {@link #onActivate()} is still running.
+     *
+     * <p>Meteor sets {@code active = true} before it calls {@code onActivate()}, so a {@code toggle()} from
+     * inside activation takes the disable branch while the module is still being registered. The route is
+     * then left half-initialised and the module looks like it "auto-disabled itself" the moment it was
+     * switched on. Deferring to the next start keeps the failure reported without corrupting state.
+     */
+    private void stopSafely() {
+        started = false;
+        if (activating) return;
+        if (isActive()) toggle();
+    }
+
+    private void activateInternal() {
         if (stopV1.get()) {
             BaseHunter v1 = Modules.get().get(BaseHunter.class);
             if (v1 != null && v1.isActive()) v1.disable();
@@ -574,7 +604,8 @@ public class BaseHunterV2 extends Module {
 
         if (!ElytraController.available()) {
             error("Meteor's Elytra Fly module is unavailable, cannot fly.");
-            toggle();
+            // Never toggle() from onActivate(): Meteor has already marked the module active, so toggling
+            // here unregisters it mid-activation. Stay enabled so it can recover once ElytraFly exists.
             return;
         }
 
@@ -588,6 +619,7 @@ public class BaseHunterV2 extends Module {
         elytraSwaps = 0;
         awaitingRedeploy = false;
         interruptedTarget = null;
+        hold.release();
         lastFlightState = FlightState.UNKNOWN;
         lastProgressWebhook = System.currentTimeMillis();
 
@@ -687,7 +719,7 @@ public class BaseHunterV2 extends Module {
 
         if (!ElytraManager.hasElytraEquipped() && !ElytraManager.equipBest()) {
             error("No elytra found. Any durability of elytra works, but you need at least one.");
-            if (abortWithoutElytra.get()) toggle();
+            if (abortWithoutElytra.get()) stopSafely();
             return;
         }
 
@@ -696,7 +728,7 @@ public class BaseHunterV2 extends Module {
         if (invalid != null) {
             error("Equipment check failed: %s.", invalid);
             publish(AutomationEvent.Type.ELYTRA_MISSING, java.util.Map.of("reason", invalid));
-            if (abortWithoutElytra.get()) toggle();
+            if (abortWithoutElytra.get()) stopSafely();
             return;
         }
 
@@ -707,6 +739,7 @@ public class BaseHunterV2 extends Module {
         lastZ = ServerUtils.mc().player.getZ();
         awaitingRedeploy = false;
         interruptedTarget = null;
+        hold.release();
         customRouteDrained = false;
         lastDimension = ServerUtils.dimension();
         nextMilestoneBlocks = milestoneInterval.get();
@@ -720,13 +753,16 @@ public class BaseHunterV2 extends Module {
 
         if (!ElytraController.available()) {
             error("Could not start Meteor's Elytra Fly.");
-            toggle();
+            stopSafely();
             return;
         }
 
         // The flight controller owns deployment from here; it will launch on the next tick. Enable now so the
-        // first frame does not stall waiting for a tick.
-        ElytraController.enable(effectiveCruiseY(), true);
+        // first frame does not stall waiting for a tick. A failed enable is reported but not fatal: the
+        // controller retries each tick, and aborting here would disable the module on the first hiccup.
+        if (!ElytraController.enable(effectiveCruiseY(), true) && chatFeedback.get()) {
+            warning("Meteor's Elytra Fly did not start; retrying from the flight controller.");
+        }
 
         if (chatFeedback.get()) {
             info("Base Hunter V2 started. Elytra: (highlight)%s(default).", ElytraManager.status());
@@ -804,6 +840,21 @@ public class BaseHunterV2 extends Module {
             return;
         }
 
+        if (hold.holding()) {
+            if (FlightHold.decide(true, ElytraManager.hasElytraEquipped(),
+                    ElytraManager.flightState().isSupported()) == FlightHold.Decision.HOLD) {
+                ElytraController.disable();
+                return;
+            }
+
+            hold.release();
+            awaitingRedeploy = false;
+            if (current == null) current = interruptedTarget;
+            interruptedTarget = null;
+            if (flight != null) flight.beginLeg();
+            if (chatFeedback.get()) info("Flight is possible again, resuming the route.");
+        }
+
         if (flight != null) flight.setWantsFlight(true);
 
         // Claim movement and rotation for this tick. If a higher-priority automation (equipment recovery, a
@@ -855,6 +906,26 @@ public class BaseHunterV2 extends Module {
         controlLease = null;
     }
 
+    /**
+     * Parks the route until flying is possible again, keeping the current target.
+     *
+     * <p>The alternative - ending the route and disabling the module - is indistinguishable from the module
+     * switching itself off, and throws away a route that a single elytra would revive.
+     */
+    private void beginHold(FlightState state, FlightHold.Reason why, String detail) {
+        hold.hold(why);
+        awaitingRedeploy = false;
+        ElytraController.disable();
+        if (hold.shouldAnnounce()) {
+            if (chatFeedback.get()) {
+                warning("Holding the route (%s, %s). It resumes once flight is possible.",
+                    detail, state.name().toLowerCase());
+            }
+            publish(AutomationEvent.Type.FLIGHT_INTERRUPTED, java.util.Map.of(
+                "reason", detail, "state", state.name().toLowerCase()));
+        }
+    }
+
     /** Reacts to the flight controller's decision: abort, replace or redeploy after a landing. */
     private void handleFlightAction(ElytraDeployment.Action action) {
         FlightState state = ElytraManager.flightState();
@@ -862,7 +933,10 @@ public class BaseHunterV2 extends Module {
         boolean nowNotGliding = state != FlightState.GLIDING;
 
         if (action == ElytraDeployment.Action.ABORT) {
-            stopAndMaybeDisconnect("No elytra left");
+            // Out of elytras. Hold the route instead of ending it: the player can pull one from a chest or an
+            // ender chest, and the hunt then continues from the same target. Ending the route here was the
+            // other way the module appeared to disable itself mid-hunt.
+            beginHold(state, FlightHold.Reason.NO_ELYTRA, "no elytra");
             return;
         }
 
@@ -883,7 +957,10 @@ public class BaseHunterV2 extends Module {
         if (!autoRedeploy.get() || state == FlightState.GLIDING) {
             awaitingRedeploy = false;
             // A live glide means the previous interruption is over, so re-arm the one-time warning.
-            if (state == FlightState.GLIDING) warnedNotFlying = false;
+            if (state == FlightState.GLIDING) {
+                warnedNotFlying = false;
+                hold.noteGlide();
+            }
             lastFlightState = state;
             return;
         }
@@ -891,16 +968,36 @@ public class BaseHunterV2 extends Module {
         awaitingRedeploy = true;
 
         if (flight.launchExhausted()) {
-            // Retries exhausted. Resume the interrupted target if asked, otherwise treat the flight as over.
-            if (resumeAfterInterruption.get() && interruptedTarget != null) {
-                current = interruptedTarget;
-                interruptedTarget = null;
+            // Retries exhausted. Equipment is checked first: retrying an interrupted target is pointless when
+            // there is nothing to fly with, and doing it before this check is what made the old code either
+            // loop forever or end the route.
+            if (!ElytraManager.hasElytraEquipped()) {
+                beginHold(state, FlightHold.Reason.NO_ELYTRA, "no elytra");
+                return;
+            }
+
+            if (!state.isSupported()) {
+                // Still airborne: a launch cannot succeed from here, so wait for the ground instead of
+                // spending the rest of the budget on doomed attempts.
+                ElytraController.disable();
+                return;
+            }
+
+            // Grounded with an elytra: the failure was situational (a wall, a ledge, a lag spike), not
+            // equipment. Replenish the budget so the next tick tries again. The restart count bounds this, so a
+            // genuinely impossible launch still ends up holding rather than retrying for the session.
+            if (hold.tryRestart()) {
+                if (resumeAfterInterruption.get() && interruptedTarget != null) {
+                    current = interruptedTarget;
+                    interruptedTarget = null;
+                }
                 flight.beginLeg();
                 if (chatFeedback.get()) {
-                    info("Redeploy attempts exhausted, retrying the interrupted target.");
+                    info("Redeploy failed from a bad spot; retrying (attempt %d/%d).",
+                        hold.restarts(), MAX_REDEPLOY_RESTARTS);
                 }
             } else {
-                stopAndMaybeDisconnect("Could not redeploy the elytra");
+                beginHold(state, FlightHold.Reason.LAUNCH_FAILING, "launch keeps failing");
             }
             return;
         }
@@ -1326,7 +1423,7 @@ public class BaseHunterV2 extends Module {
             ServerUtils.mc().player.networkHandler.getConnection()
                 .disconnect(Text.literal("Base Hunter V2: " + reason));
         } else if (isActive()) {
-            toggle();
+            stopSafely();
         }
     }
 
