@@ -234,6 +234,11 @@ public final class ElytraManager {
             return hasSpare() ? null : "no elytra in the inventory";
         }
 
+        // A zero-length journey means the caller only wants to know whether an elytra is present, not whether
+        // it can survive a specific distance. Applying the minimum here made a worn-but-serviceable elytra
+        // fail the check at start-up and abort the route before it began.
+        if (journeyBlocks <= 0) return null;
+
         int[] spares = spareRemainingBySlot();
         if (worn >= minimumDurability) return null;
 

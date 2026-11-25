@@ -5,6 +5,48 @@ Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](h
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-11-11
+
+The stability release. The modules used to switch themselves off mid-hunt; now a recoverable problem
+parks the route and keeps your target instead of ending the session.
+
+### Fixed
+
+- **The hunter no longer disables itself the moment you turn it on.** Meteor sets `active = true`
+  *before* it calls `onActivate()`, so the `toggle()` calls inside activation ran the disable branch
+  while the module was still being registered. The route was left half-initialised and the module
+  looked like it had switched itself off. Both `BaseHunter` and `BaseHunterV2` now guard every
+  disable path with an `activating` flag, so a start-up failure is reported without corrupting state.
+- **Running out of elytras no longer ends the hunt.** `BaseHunterV2` called `stopAndMaybeDisconnect`
+  on an ABORT, which ended the route and disabled the module — exactly when you were about to pull a
+  replacement out of a chest. The route is now held and resumes when an elytra is worn again.
+- **A launch that failed on the ground is retried instead of ending the hunt.** A wall, a ledge or a
+  lag spike could spend the whole deploy budget and then stop the route for good. V2 now restarts up
+  to three times from solid ground before parking, and replenishes the budget on every live glide.
+- **A mid-air exhaustion no longer burns the retry budget.** When the deploy budget ran out while
+  still airborne, every further attempt was doomed. It now waits for the ground first.
+- **A fireworks pause never resumed.** `BaseHunter` reused one `paused` flag for both "player nearby"
+  and "out of fireworks", but only the player-nearby path had a resume condition, so an empty firework
+  stack paused the hunt forever. The pause now records its reason and each reason has its own resume
+  condition.
+- **A transient Baritone probe miss disabled v1.** If Baritone answered a capability probe late, the
+  module disabled itself on enable. It now only disables when Baritone is genuinely absent, and waits
+  for it otherwise. The probe also retries within a window (`ProbeRetry`) instead of latching the
+  first failure, and the HUD's `health()` call no longer drives probes every frame.
+- **A zero-length journey rejected a serviceable elytra.** `ElytraManager.validateJourney` applied the
+  minimum-durability rule to a 0-block journey, so a worn-but-usable elytra failed the start-up check.
+- **`ElytraController.enable()` reported success unconditionally.** It now returns whether ElytraFly
+  is actually active, so callers can tell that a launch did not take.
+
+### Added
+
+- `FlightHold` (`core/logic`) — the pure, tested policy behind parking and resuming a route, including
+  the bounded ground-restart budget. Covered by `coreLogicTest.flightHold`.
+
+### Changed
+
+- The default `fireworks-to-keep` check now pauses instead of stopping, and its description says so.
+
 ## [2.7.0] — 2026-11-12
 
 The persistence release. Alongside the kit-bot delivery fixes, two things the addon promised but did

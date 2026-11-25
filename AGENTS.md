@@ -387,6 +387,33 @@ succeed would be retried forever (this was a real bug; the same shape was fixed 
 Anything that changes the deploy/recover policy belongs in `DeploymentGovernor`, not in
 `FlightController`, so it stays testable without a Minecraft client.
 
+### Never disable the module to handle a recoverable condition
+
+Both route modules used to call `toggle()` when something went wrong: no elytra, a launch that would not
+start, an empty firework stack, no waypoint. Because Meteor sets `active = true` **before** it calls
+`onActivate()`, a `toggle()` from inside activation takes the disable branch while the module is still
+being registered, so the route was left half-initialised and the module looked like it had switched
+itself off the moment it was switched on. Even outside activation it was wrong: each of those conditions
+is temporary, and disabling threw away the route that one elytra (or one restock) would have revived.
+
+The rules, all pinned by tests:
+
+- **Never `toggle()` from `onActivate()`.** `BaseHunterV2` guards this with `activating` / `stopSafely()`
+  and `BaseHunter` with `activating` / `activateInternal()`.
+- **Recoverable conditions park the route, they do not end it.** V2 uses `FlightHold` (pure logic in
+  `core/logic`, tested by `coreLogicTest.flightHold`): no elytra, still airborne, or a launch that keeps
+  failing all `hold()` the route, keeping the current target. It resumes automatically once an elytra is
+  worn *and* the player is on ground a launch can succeed from - both, because either alone is not
+  enough. `BaseHunter` holds on `noElytraPaused` and resumes when an elytra is worn again.
+- **Pause with a reason.** `BaseHunter.pauseReason` is `PLAYER` or `FIREWORKS`, and the resume condition
+  is chosen from that reason. A single `paused` flag was not enough: the player-proximity resume rule
+  would have left a fireworks pause stuck forever.
+- **Bound the retries that a hold replaces.** `FlightHold.tryRestart()` caps ground restarts at three
+  before holding, so a genuinely impossible launch does not loop for the session.
+- **A failed `ElytraController.enable()` returns false**, so a caller can tell it did not take. It used
+  to return `true` unconditionally, which let V2 believe it was flying when Meteor's ElytraFly had
+  refused to start.
+
 ### Bounded collections (long sessions must not leak)
 
 Chunk scanners run for hours and can touch hundreds of thousands of chunks. Every collection that grows
