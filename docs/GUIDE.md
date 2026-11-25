@@ -2,7 +2,7 @@
 
 This is the complete manual for the addon: what every module does, how the pieces fit together, how
 to configure them for an anarchy server, and how to read the data it stores. It documents release
-**2.5.0**.
+**2.11.0**.
 
 If you only read one section, read [Quick start](#quick-start) and
 [How the automation decides things](#how-the-automation-decides-things).
@@ -134,13 +134,33 @@ What it does for you:
   an interruption in mid-air is reported and handled separately.
 - **Recovery from a failed launch.** Failed launches are retried with exponential backoff up to
   `max-deploy-attempts`, then reported once (chat + webhook) instead of hammering a doomed takeoff
-  forever.
+  forever. A launch that fails while you are standing safely on the ground is retried up to three
+  times before the route is parked, because a wall or a ledge is not an equipment problem.
+- **The route is never thrown away.** Running out of elytras, being airborne when the retry budget is
+  spent, or a launch that keeps failing *parks* the route and keeps your current target. It resumes on
+  its own as soon as you are wearing an elytra and standing somewhere a launch can succeed. Pull an
+  elytra out of a chest or an ender chest and the hunt continues from where it stopped.
 - **Broken-elytra handling.** If the worn elytra breaks mid-air, the best spare is equipped.
 - **Dimension-change recovery.** Changing dimension tears the flight down and saves the route target;
   it resumes when you are back.
 - **Journey validation.** Before a route starts, the total elytra durability you carry is compared
   against the distance to fly. If it is not enough, the route is refused with a clear reason rather
   than failing somewhere over an ocean.
+
+### When the route parks instead of stopping
+
+Every condition that used to end a hunt now parks it, because each one is temporary:
+
+| Condition | What happens | What resumes it |
+| --- | --- | --- |
+| No elytra left | Route parked, target kept | An elytra worn (from a chest, an ender chest or your inventory) |
+| Launch fails on the ground | Up to 3 restarts, then parked | Wearing an elytra and standing on solid ground |
+| Still airborne when retries run out | Flight controller released, route parked | Landing |
+| Out of fireworks (v1) | Paused | Restocking above `fireworks-to-keep` |
+| Player nearby | Paused | The player leaving, if `resume-after-players-leave` is on |
+
+The distinction matters: parking keeps the route and the target, so nothing has to be re-planned. Use
+`/bh stop` when you actually want the route gone.
 
 ### Durability decisions
 

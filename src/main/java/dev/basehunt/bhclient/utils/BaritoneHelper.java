@@ -7,6 +7,7 @@ import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.selection.ISelection;
 import baritone.api.utils.BlockOptionalMeta;
+import dev.basehunt.bhclient.core.logic.ProbeRetry;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
@@ -39,6 +40,10 @@ public final class BaritoneHelper {
     private static volatile IBaritone cached;
     private static volatile String probeError = "";
 
+    /** How long a failed probe is trusted before it is retried, in milliseconds. */
+    private static final long FAILURE_RETRY_MS = ProbeRetry.DEFAULT_RETRY_MS;
+    private static volatile long failedAt;
+
     static {
         boolean present;
         String reason = "";
@@ -61,8 +66,12 @@ public final class BaritoneHelper {
     /**
      * The primary baritone, or null when Baritone is missing or unusable.
      *
-     * <p>The provider is resolved once and cached. Baritone builds its singleton during client
-     * initialisation, before this addon loads, so the cached value stays valid for the client's lifetime.
+     * <p>Baritone builds its singleton during client initialisation, but this addon can be probed
+     * before that has happened — the HUD reads {@link #health()} on the first frame. A failure is
+     * therefore only cached for {@link #FAILURE_RETRY_MS}, not for the client's lifetime: latching a
+     * single early miss made {@link #usable()} return false forever and every module that gates on it
+     * disabled itself on enable. Success is still cached permanently, because a resolved instance
+     * stays valid.
      */
     public static IBaritone get() {
         if (!AVAILABLE) return null;
@@ -70,26 +79,33 @@ public final class BaritoneHelper {
         IBaritone local = cached;
         if (local != null) return local;
 
-        if (!probed) {
-            synchronized (BaritoneHelper.class) {
-                if (!probed) {
-                    try {
-                        local = BaritoneAPI.getProvider().getPrimaryBaritone();
-                        cached = local;
-                        if (local == null) probeError = "Baritone has no primary instance";
-                    } catch (Throwable t) {
-                        cached = null;
-                        probeError = describe(t);
-                    } finally {
-                        probed = true;
-                    }
+        boolean retry = ProbeRetry.shouldProbe(
+            probed, cached != null, failedAt, java.lang.System.currentTimeMillis(), FAILURE_RETRY_MS);
+        if (!retry) return null;
+
+        synchronized (BaritoneHelper.class) {
+            local = cached;
+            if (local != null) return local;
+
+            try {
+                local = BaritoneAPI.getProvider().getPrimaryBaritone();
+                cached = local;
+                if (local == null) {
+                    probeError = "Baritone has no primary instance";
+                    failedAt = java.lang.System.currentTimeMillis();
                 } else {
-                    local = cached;
+                    probeError = "";
                 }
+            } catch (Throwable t) {
+                cached = null;
+                probeError = describe(t);
+                failedAt = java.lang.System.currentTimeMillis();
+            } finally {
+                probed = true;
             }
         }
 
-        return local;
+        return cached;
     }
 
     /** True when Baritone is installed and its API actually answers. */
@@ -97,11 +113,18 @@ public final class BaritoneHelper {
         return get() != null;
     }
 
-    /** A short reason Baritone is unusable, or an empty string when it is fine. */
+    /**
+     * A short reason Baritone is unusable, or an empty string when it is fine.
+     *
+     * <p>Reads the cached probe result without starting one. The HUD calls this every frame, so probing
+     * here would run {@code BaritoneAPI}'s static initialiser on the very first rendered frame — before
+     * Baritone has finished initialising — and cache a spurious failure.
+     */
     public static String health() {
         if (!AVAILABLE) return PRESENCE_ERROR;
-        if (get() == null) return probeError.isEmpty() ? "Baritone is not responding" : probeError;
-        return "";
+        if (cached != null) return "";
+        if (!probed) return "";
+        return probeError.isEmpty() ? "Baritone is not responding" : probeError;
     }
 
     /** The installed Baritone version, or "unknown" when it cannot be read. */
@@ -117,24 +140,48 @@ public final class BaritoneHelper {
     }
 
     public static Settings settings() {
-        if (get() == null) return null;
-        return BaritoneAPI.getSettings();
+        try {
+            if (get() == null) return null;
+            return BaritoneAPI.getSettings();
+        } catch (Throwable t) {
+            probeError = describe(t);
+            cached = null;
+            failedAt = java.lang.System.currentTimeMillis();
+            return null;
+        }
     }
 
     public static boolean isPathing() {
         IBaritone baritone = get();
-        return baritone != null && baritone.getPathingBehavior().isPathing();
+        if (baritone == null) return false;
+        try {
+            return baritone.getPathingBehavior().isPathing();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     public static boolean isElytraLoaded() {
         IBaritone baritone = get();
-        return baritone != null && baritone.getElytraProcess().isLoaded();
+        if (baritone == null) return false;
+        try {
+            return baritone.getElytraProcess().isLoaded();
+        } catch (Throwable t) {
+            // The elytra process is backed by a nested nether-pathfinder jar. When it fails to load every
+            // call throws; report "not loaded" so callers retry instead of propagating into the tick loop.
+            return false;
+        }
     }
 
     /** True when the elytra process is running but can be interrupted without losing the route. */
     public static boolean isElytraSafeToCancel() {
         IBaritone baritone = get();
-        return baritone != null && baritone.getElytraProcess().isLoaded() && baritone.getElytraProcess().isSafeToCancel();
+        if (baritone == null) return false;
+        try {
+            return baritone.getElytraProcess().isLoaded() && baritone.getElytraProcess().isSafeToCancel();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** True when Baritone is actively flying the elytra or walking a path. */
@@ -146,8 +193,16 @@ public final class BaritoneHelper {
         IBaritone baritone = get();
         if (baritone == null) return;
 
-        baritone.getPathingBehavior().cancelEverything();
-        baritone.getElytraProcess().onLostControl();
+        try {
+            baritone.getPathingBehavior().cancelEverything();
+        } catch (Throwable ignored) {
+            // A broken behavior must not throw out of a module's onDeactivate.
+        }
+
+        try {
+            baritone.getElytraProcess().onLostControl();
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Flies to a destination using Baritone's nether-pathfinder powered elytra process. */
@@ -155,28 +210,47 @@ public final class BaritoneHelper {
         IBaritone baritone = get();
         if (baritone == null) return;
 
-        baritone.getElytraProcess().pathTo(destination);
+        try {
+            baritone.getElytraProcess().pathTo(destination);
+        } catch (Throwable t) {
+            probeError = describe(t);
+            cached = null;
+            failedAt = java.lang.System.currentTimeMillis();
+        }
     }
 
     public static void elytraPathTo(Goal goal) {
         IBaritone baritone = get();
         if (baritone == null) return;
 
-        baritone.getElytraProcess().pathTo(goal);
+        try {
+            baritone.getElytraProcess().pathTo(goal);
+        } catch (Throwable t) {
+            probeError = describe(t);
+            cached = null;
+            failedAt = java.lang.System.currentTimeMillis();
+        }
     }
 
     public static void walkTo(BlockPos destination) {
         IBaritone baritone = get();
         if (baritone == null) return;
 
-        baritone.getCustomGoalProcess().setGoalAndPath(new baritone.api.pathing.goals.GoalNear(destination, 2));
+        try {
+            baritone.getCustomGoalProcess().setGoalAndPath(new baritone.api.pathing.goals.GoalNear(destination, 2));
+        } catch (Throwable ignored) {
+        }
     }
 
     public static BlockPos currentDestination() {
         IBaritone baritone = get();
         if (baritone == null) return null;
 
-        return baritone.getElytraProcess().currentDestination();
+        try {
+            return baritone.getElytraProcess().currentDestination();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** Forgets the elytra process's cached state, forcing a clean re-plan on the next path request. */
@@ -184,14 +258,20 @@ public final class BaritoneHelper {
         IBaritone baritone = get();
         if (baritone == null) return;
 
-        baritone.getElytraProcess().resetState();
+        try {
+            baritone.getElytraProcess().resetState();
+        } catch (Throwable ignored) {
+        }
     }
 
     public static void runCommand(String command) {
         IBaritone baritone = get();
         if (baritone == null) return;
 
-        baritone.getCommandManager().execute(command);
+        try {
+            baritone.getCommandManager().execute(command);
+        } catch (Throwable ignored) {
+        }
     }
 
     /**
